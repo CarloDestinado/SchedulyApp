@@ -1,0 +1,22 @@
+
+> scheduly@1.0.0 start
+> expo start --port 8081
+
+Starting project at C:\Users\techd\Documents\mobileApp\Scheduly
+React Compiler enabled
+Starting Metro Bundler
+Waiting on http://localhost:8081
+Logs for your project will appear below.
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 93.8% (735/759)
+λ node_modules\expo-router\node\render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 87.5% (1002/1090)
+λ Bundled 3666ms node_modules\expo-router\node\render.js (1172 modules)
+Web Bundled 6638ms node_modules\expo-router\entry.js (1183 modules)
+Web node_modules\expo-router\entry.js ▓▓▓▓▓▓░░░░░░░░░░ 43.7% (296/448)
+Web Bundled 1208ms node_modules\expo-router\entry.js (1097 modules)
+ LOG  [web] Logs will appear in the browser console
+Web node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+λ Bundled 46ms node_modules\expo-router\node\render.js (1 module)
+Web Bundled 441ms node_modules\expo-router\entry.js (1 module)
+Web Bundled 38ms node_modules\expo-router\entry.js (1 module)
+ LOG  [web] Logs will appear in the browser console
