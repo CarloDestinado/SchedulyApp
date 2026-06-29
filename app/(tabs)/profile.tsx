@@ -185,6 +185,7 @@ export default function ProfileScreen() {
         </TouchableOpacity>
 
         <Text style={[styles.version, { color: colors.muted, fontSize: s(12), marginTop: s(16) }]}>Scheduly v1.0.0 - Prototype</Text>
+        <Text style={[styles.version, { color: colors.muted, fontSize: s(12), marginTop: s(4) }]}>created by Carlo Destinado</Text>
 
         {/* ── Edit Profile Modal ── */}
         <Modal visible={editVisible} transparent animationType="fade">
