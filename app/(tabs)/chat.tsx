@@ -1,20 +1,17 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity,
-  TextInput, StyleSheet, SafeAreaView, Platform, ScrollView,
+  TextInput, StyleSheet, Platform, ScrollView,
   Keyboard, Modal, RefreshControl, LayoutAnimation,
-  UIManager, FlatList,
+  FlatList,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { useAppTheme } from '@/context/ThemeContext';
 import { useResponsive } from '@/hooks/useResponsive';
 import { ThemedText } from '@/components/themed-text';
 import * as supabaseDb from '@/lib/supabaseDb';
-
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 type ActiveConv = { id: string; type: 'dm' | 'circle' };
 
@@ -211,16 +208,12 @@ export default function ChatScreen() {
   const openCircleChat = useCallback(async (circleId: string) => {
     setActiveConv({ id: circleId, type: 'circle' });
     setTypingUsers([]);
-    if (convSubRef.current) convSubRef.current();
     if (typingSubRef.current) typingSubRef.current();
-    convSubRef.current = supabaseDb.onMessagesChange(
-      [circleId],
-      () => { LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); },
-    );
     typingSubRef.current = supabaseDb.onTypingChange(
       `circle-${circleId}`,
       (users) => setTypingUsers(users.filter(u => u !== myName)),
     );
+    // Global subscription (in AuthContext) already handles real-time message updates
     await fetchChatMessages(circleId);
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 200);
   }, [fetchChatMessages, myName]);
@@ -269,7 +262,6 @@ export default function ChatScreen() {
 
   useEffect(() => {
     return () => {
-      if (convSubRef.current) convSubRef.current();
       if (typingSubRef.current) typingSubRef.current();
       if (typingTimer.current) clearTimeout(typingTimer.current);
       if (pollRef.current) clearInterval(pollRef.current);
@@ -949,7 +941,7 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(16), paddingBottom: s(8) }]}>
+      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(8), paddingBottom: s(8) }]}>
         {activeConv ? (
           <ThemedText style={[styles.headerTitle, { color: colors.text, fontSize: isSmallDevice ? 22 : s(26) }]}>
             {activeConv.type === 'circle' ? (activeCircle?.name ?? 'Circle') : (convPreview?.otherUserName ?? 'Chat')}
@@ -972,49 +964,49 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14', paddingTop: Platform.OS === 'android' ? 32 : 0 },
+  safe: { flex: 1, paddingTop: Platform.OS === 'android' ? 16 : 0 },
   header: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12 },
-  headerTitle: { color: '#F1F5F9', fontSize: 26, fontWeight: '800', letterSpacing: -0.5, fontFamily: 'Inter_800ExtraBold' },
-  headerSub: { color: '#475569', fontSize: 13, marginTop: 2, fontFamily: 'Inter_400Regular' },
+  headerTitle: { fontSize: 26, fontWeight: '800', letterSpacing: -0.5, fontFamily: 'Inter_800ExtraBold' },
+  headerSub: { fontSize: 13, marginTop: 2, fontFamily: 'Inter_400Regular' },
   searchWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#111827', borderRadius: 12, paddingHorizontal: 12,
-    borderWidth: 1, borderColor: '#243149', gap: 8,
+    borderRadius: 12, paddingHorizontal: 12,
+    borderWidth: 1, gap: 8,
   },
-  searchInput: { flex: 1, color: '#F1F5F9', fontSize: 14, paddingVertical: 12, fontFamily: 'Inter_400Regular' },
+  searchInput: { flex: 1, fontSize: 14, paddingVertical: 12, fontFamily: 'Inter_400Regular' },
   searchResults: {
-    backgroundColor: '#0F172A', borderRadius: 10, padding: 8,
-    borderWidth: 1, borderColor: '#243149', marginBottom: 12,
+    borderRadius: 10, padding: 8,
+    borderWidth: 1, marginBottom: 12,
   },
-  searchLabel: { color: '#475569', fontSize: 11, fontWeight: '700', letterSpacing: 0.6, marginBottom: 6, textTransform: 'uppercase', paddingHorizontal: 6, fontFamily: 'Inter_700Bold' },
+  searchLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, marginBottom: 6, textTransform: 'uppercase', paddingHorizontal: 6, fontFamily: 'Inter_700Bold' },
   searchRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 8, paddingHorizontal: 6,
-    borderBottomWidth: 1, borderBottomColor: '#131C30',
+    borderBottomWidth: 1,
   },
   userAvatar: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
   userInitial: { fontWeight: '700', fontFamily: 'Inter_700Bold' },
-  userName: { color: '#F1F5F9', fontSize: 14, fontWeight: '600', fontFamily: 'Inter_600SemiBold' },
-  userEmail: { color: '#475569', fontSize: 11, fontFamily: 'Inter_400Regular' },
+  userName: { fontSize: 14, fontWeight: '600', fontFamily: 'Inter_600SemiBold' },
+  userEmail: { fontSize: 11, fontFamily: 'Inter_400Regular' },
   sectionLabel: {
-    color: '#475569', fontSize: 11, fontWeight: '700',
+    fontSize: 11, fontWeight: '700',
     letterSpacing: 0.6, marginBottom: 8, textTransform: 'uppercase',
     fontFamily: 'Inter_700Bold',
   },
   convRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: '#0F172A', borderRadius: 12, padding: 12,
-    borderWidth: 1, borderColor: '#243149', marginBottom: 8,
+    borderRadius: 12, padding: 12,
+    borderWidth: 1, marginBottom: 8,
   },
   convAvatar: { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  convName: { color: '#F1F5F9', fontSize: 14, fontWeight: '700', fontFamily: 'Inter_700Bold' },
-  convPreview: { color: '#64748B', fontSize: 12, marginTop: 2, fontFamily: 'Inter_400Regular' },
+  convName: { fontSize: 14, fontWeight: '700', fontFamily: 'Inter_700Bold' },
+  convPreview: { fontSize: 12, marginTop: 2, fontFamily: 'Inter_400Regular' },
   convHeader: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#243149', marginBottom: 4,
+    paddingVertical: 10, borderBottomWidth: 1, marginBottom: 4,
   },
   convAvatarSmall: { width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
-  convHeaderName: { color: '#F1F5F9', fontSize: 16, fontWeight: '700', flex: 1, fontFamily: 'Inter_700Bold' },
+  convHeaderName: { fontSize: 16, fontWeight: '700', flex: 1, fontFamily: 'Inter_700Bold' },
   msgBubble: {
     maxWidth: '80%', paddingHorizontal: 12, paddingVertical: 8,
     marginBottom: 8,
@@ -1025,7 +1017,7 @@ const styles = StyleSheet.create({
   inputBar: {
     flexDirection: 'row', alignItems: 'flex-end', gap: 8,
     paddingHorizontal: 12, paddingVertical: 8,
-    borderTopWidth: 1, borderTopColor: '#243149',
+    borderTopWidth: 1,
   },
   chatInput: {
     flex: 1, maxHeight: 100, paddingHorizontal: 14, paddingVertical: 10,
@@ -1038,26 +1030,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, marginBottom: 4,
   },
-  emptyTitle: { color: '#94A3B8', fontSize: 16, fontWeight: '600', fontFamily: 'Inter_600SemiBold' },
-  emptySub: { color: '#64748B', fontSize: 13, textAlign: 'center', fontFamily: 'Inter_400Regular' },
+  emptyTitle: { fontSize: 16, fontWeight: '600', fontFamily: 'Inter_600SemiBold' },
+  emptySub: { fontSize: 13, textAlign: 'center', fontFamily: 'Inter_400Regular' },
   iconBtnSmall: { justifyContent: 'center', alignItems: 'center' },
   modalOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    flex: 1,
     justifyContent: 'center', alignItems: 'center',
   },
   modalCard: {
-    backgroundColor: '#0F172A', padding: 20,
+    padding: 20,
     borderRadius: 16,
   },
   memberRow: {
     flexDirection: 'row', alignItems: 'center',
-    borderBottomWidth: 1, borderBottomColor: '#131C30',
+    borderBottomWidth: 1,
   },
   memberAvatar: {
     justifyContent: 'center', alignItems: 'center',
   },
   memberInitial: { fontSize: 14, fontWeight: '700', fontFamily: 'Inter_700Bold' },
-  memberName: { color: '#CBD5E1', fontSize: 14, flex: 1, fontFamily: 'Inter_400Regular' },
+  memberName: { fontSize: 14, flex: 1, fontFamily: 'Inter_400Regular' },
   scrollFab: {
     position: 'absolute', bottom: 16, right: 16,
     width: 40, height: 40, borderRadius: 20,

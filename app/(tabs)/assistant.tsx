@@ -1,8 +1,9 @@
 import { useState, useRef } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
-  StyleSheet, SafeAreaView, KeyboardAvoidingView, Platform,
+  StyleSheet, KeyboardAvoidingView, Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
@@ -254,7 +255,7 @@ async function executeAction(text: string, ctx: {
   const circleMatch = text.match(/(?:create|make|start)\s+(?:a\s+)?(?:circle\s+)(?:called\s+)?["']?([^"'\n]+?)["']?$/i);
   if (circleMatch) {
     const name = circleMatch[1].trim();
-    const newCircle = ctx.addCircle({ name, color: '#2DD4BF', members: [ctx.user?.name || 'You'], inviteCode: '', isOwner: true, canEdit: true });
+    const newCircle = ctx.addCircle({ name, color: '#2DD4BF', members: [ctx.user?.name || 'You'], inviteCode: '', isOwner: true, role: 'owner' });
     return `Created circle "${newCircle.name}"! Share the invite code with friends to add them.`;
   }
 
@@ -394,7 +395,7 @@ function generateAnswer(q: string, events: any[], user: any, prefsObj: any) {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border, paddingHorizontal: pad(16, 20), paddingVertical: s(18), paddingTop: s(36), gap: s(14) }]}>
+      <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border, paddingHorizontal: pad(16, 20), paddingVertical: s(18), paddingTop: s(18), gap: s(14) }]}>
         <View style={[styles.aiAvatar, { backgroundColor: colors.accent, width: s(54), height: s(54), borderRadius: s(16) }]}>
           <Ionicons name="sparkles" size={s(26)} color={colors.onAccent} />
           <View style={[styles.onlineDot, { borderColor: colors.background }]} />
@@ -505,69 +506,67 @@ function generateAnswer(q: string, events: any[], user: any, prefsObj: any) {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14' },
+  safe: { flex: 1 },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingHorizontal: 20, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: '#0F1629',
-    backgroundColor: '#080B14',
+    borderBottomWidth: 1,
   },
   aiAvatar: {
     width: 44, height: 44, borderRadius: 14,
-    backgroundColor: '#2DD4BF', justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
   onlineDot: {
     position: 'absolute', bottom: 2, right: 2,
     width: 10, height: 10, borderRadius: 5,
-    backgroundColor: '#10B981', borderWidth: 2, borderColor: '#080B14',
+    borderWidth: 2,
   },
-  headerTitle: { color: '#F1F5F9', fontSize: 16, fontWeight: '700' },
-  headerSub: { color: '#475569', fontSize: 12, marginTop: 1 },
-  headerHint: { marginTop: 6, fontSize: 11, color: '#FBBF24' },
+  headerTitle: { fontSize: 16, fontWeight: '700' },
+  headerSub: { fontSize: 12, marginTop: 1 },
+  headerHint: { marginTop: 6, fontSize: 11 },
   headerBadge: {
-    backgroundColor: '#134E4A', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4,
-    borderWidth: 1, borderColor: '#2DD4BF40',
+    borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4,
+    borderWidth: 1,
   },
-  headerBadgeText: { color: '#5EEAD4', fontSize: 11, fontWeight: '700' },
+  headerBadgeText: { fontSize: 11, fontWeight: '700' },
   messageList: { padding: 16, paddingBottom: 8 },
   bubbleRow: { flexDirection: 'row', marginBottom: 12, alignItems: 'flex-end' },
   rowUser: { justifyContent: 'flex-end' },
   rowAI: { justifyContent: 'flex-start' },
   aiBubbleAvatar: {
     width: 26, height: 26, borderRadius: 8,
-    backgroundColor: '#134E4A', justifyContent: 'center', alignItems: 'center',
-    marginRight: 8, borderWidth: 1, borderColor: '#2DD4BF40',
+    justifyContent: 'center', alignItems: 'center',
+    marginRight: 8, borderWidth: 1,
   },
   bubble: { maxWidth: '76%', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10 },
-  bubbleUser: { backgroundColor: '#0F766E', borderBottomRightRadius: 4 },
-  bubbleAI: { backgroundColor: '#0F1629', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#1E2D4A' },
-  bubbleText: { color: '#CBD5E1', fontSize: 14, lineHeight: 21 },
-  bubbleTextUser: { color: '#fff' },
-  bubbleTime: { color: '#475569', fontSize: 10, marginTop: 5, textAlign: 'right' },
+  bubbleUser: { borderBottomRightRadius: 4 },
+  bubbleAI: { borderBottomLeftRadius: 4, borderWidth: 1 },
+  bubbleText: { fontSize: 14, lineHeight: 21 },
+  bubbleTextUser: {},
+  bubbleTime: { fontSize: 10, marginTop: 5, textAlign: 'right' },
   typingBubble: { paddingVertical: 14 },
   typingDots: { flexDirection: 'row', gap: 5 },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#64748B' },
+  dot: { width: 7, height: 7, borderRadius: 4 },
   inputArea: {
-    borderTopWidth: 1, borderTopColor: '#0F1629',
+    borderTopWidth: 1,
     paddingBottom: Platform.OS === 'ios' ? 24 : 12, paddingTop: 10,
-    backgroundColor: '#080B14',
   },
   chips: { paddingHorizontal: 16, gap: 8, marginBottom: 10 },
   chip: {
-    backgroundColor: '#0F1629', borderRadius: 20,
+    borderRadius: 20,
     paddingHorizontal: 14, paddingVertical: 7,
-    borderWidth: 1, borderColor: '#1E2D4A',
+    borderWidth: 1,
   },
-  chipText: { color: '#64748B', fontSize: 12 },
+  chipText: { fontSize: 12 },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 16, gap: 10 },
   textInput: {
-    flex: 1, backgroundColor: '#0F1629', color: '#F1F5F9',
+    flex: 1,
     borderRadius: 18, paddingHorizontal: 16, paddingVertical: 12,
-    fontSize: 14, maxHeight: 100, borderWidth: 1, borderColor: '#1E2D4A',
+    fontSize: 14, maxHeight: 100, borderWidth: 1,
   },
   sendBtn: {
     width: 42, height: 42, borderRadius: 14,
-    backgroundColor: '#0F766E', justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
-  sendBtnOff: { backgroundColor: '#131C30' },
+  sendBtnOff: {},
 });

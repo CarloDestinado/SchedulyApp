@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, Modal,
-  TextInput, StyleSheet, SafeAreaView, Share, ScrollView, Platform,
+  TextInput, StyleSheet, Share, ScrollView, Platform,
   Pressable, TouchableWithoutFeedback, RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 
@@ -31,7 +32,7 @@ function generateCode(existingCodes: Set<string> = new Set()): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function CirclesScreen() {
-  const { user, userId, circles, addCircle, updateCircle, removeCircle, joinCircleByCode, refreshCircles, fetchCircleEvents, deleteCircleEvent } = useAuth();
+  const { user, userId, circles, addCircle, updateCircle, removeCircle, joinCircleByCode, refreshCircles, fetchCircleEvents, deleteCircleEvent, pendingInvitations, respondToInvitation, refreshInvitations, sendChatMessage } = useAuth();
   const { colors } = useAppTheme();
   const myName = user?.name ?? 'You';
   const { prefs } = usePrefs();
@@ -64,6 +65,11 @@ export default function CirclesScreen() {
   // Confirm add member modal
   const [confirmAddVisible, setConfirmAddVisible] = useState(false);
   const [pendingMember, setPendingMember] = useState<{ name: string; userId?: string; circle: Circle } | null>(null);
+
+  // Invitations modal
+  const [invitationsVisible, setInvitationsVisible] = useState(false);
+  const [handlingInvitation, setHandlingInvitation] = useState<string | null>(null);
+  const [invitationStatus, setInvitationStatus] = useState<Record<string, 'accepted' | 'declined'>>({});
 
   // Delete confirmation
   const [confirmDelete, setConfirmDelete] = useState<{
@@ -99,9 +105,9 @@ export default function CirclesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await refreshCircles();
+    await Promise.all([refreshCircles(), refreshInvitations()]);
     setRefreshing(false);
-  }, [refreshCircles]);
+  }, [refreshCircles, refreshInvitations]);
 
   const myCircles = circles.filter(c => c.members.some(isCurrentMember));
 
@@ -129,7 +135,7 @@ export default function CirclesScreen() {
       members: [myName],
       color: newColor,
       isOwner: true,
-      canEdit: false,
+      role: 'owner',
       memberIds: userId ? { [myName]: userId } : {},
     });
     setCreateVisible(false);
@@ -184,7 +190,7 @@ export default function CirclesScreen() {
         members: [...circle.members, name],
         color: circle.color,
         isOwner: false,
-        canEdit: false,
+        role: 'member',
         memberIds,
       };
       supabaseDb.saveCircleToUser(memberUserId, newCircle)
@@ -200,17 +206,30 @@ export default function CirclesScreen() {
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
 
       {/* Header */}
-      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(20), paddingBottom: s(12) }]}>
+      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(10), paddingBottom: s(12) }]}>
         <View>
           <Text style={[styles.headerTitle, { color: colors.text, fontSize: isSmallDevice ? 22 : s(26) }]}>Circles</Text>
           <Text style={[styles.headerSub, { color: colors.muted, fontSize: s(13) }]}>{myCircles.length} group{myCircles.length !== 1 ? 's' : ''}</Text>
         </View>
         <View style={[styles.headerBtns, { gap: s(10) }]}>
+          {userId && (
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: colors.surface, borderColor: colors.border, width: s(40), height: s(40), borderRadius: s(12) }]}
+              onPress={() => { refreshInvitations(); setInvitationsVisible(true); }}
+            >
+              <Ionicons name="notifications-outline" size={s(20)} color={colors.accent} />
+              {pendingInvitations.length > 0 && (
+                <View style={{ position: 'absolute', top: -4, right: -4, backgroundColor: colors.danger, borderRadius: s(10), width: s(18), height: s(18), justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ color: '#fff', fontSize: s(10), fontWeight: '800', textAlign: 'center', lineHeight: s(18) }}>{pendingInvitations.length > 9 ? '9+' : pendingInvitations.length}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.surface, borderColor: colors.border, width: s(40), height: s(40), borderRadius: s(12) }]} onPress={openJoin}>
-            <Ionicons name="enter-outline" size={s(20)} color={colors.accent} />
+            <Ionicons name="qr-code-outline" size={s(20)} color={colors.accent} />
           </TouchableOpacity>
           <TouchableOpacity style={[styles.iconBtn, styles.iconBtnPrimary, { backgroundColor: colors.accentStrong, borderColor: colors.accent + '40', width: s(40), height: s(40), borderRadius: s(12) }]} onPress={openCreate}>
-            <Ionicons name="add" size={s(22)} color={colors.onAccent} />
+            <Ionicons name="add-circle" size={s(22)} color={colors.onAccent} />
           </TouchableOpacity>
         </View>
       </View>
@@ -225,7 +244,7 @@ export default function CirclesScreen() {
           <TouchableOpacity style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border, padding: compact ? s(10) : s(14), borderRadius: s(16), marginBottom: s(12) }]} activeOpacity={0.75} onPress={() => router.push(`/circle-detail?id=${item.id}`)}>
             <View style={[styles.cardAccent, { backgroundColor: item.color }]} />
             <View style={[styles.avatarWrap, { backgroundColor: item.color + '20', width: compact ? s(40) : s(46), height: compact ? s(40) : s(46), borderRadius: compact ? s(12) : s(14), marginRight: compact ? s(10) : s(14) }]}>
-              <Ionicons name="people" size={compact ? s(18) : s(22)} color={item.color} />
+              <Ionicons name="people-outline" size={compact ? s(18) : s(22)} color={item.color} />
             </View>
             <View style={styles.cardBody}>
               <View style={[styles.cardNameRow, { marginBottom: s(6) }]}>
@@ -248,7 +267,7 @@ export default function CirclesScreen() {
               </View>
             </View>
             <TouchableOpacity style={[styles.shareBtn, { backgroundColor: colors.accentSoft, borderColor: colors.accent + '35', width: compact ? s(32) : s(36), height: compact ? s(32) : s(36), borderRadius: compact ? s(8) : s(10) }]} onPress={() => handleShare(item)}>
-              <Ionicons name="share-outline" size={compact ? s(15) : s(17)} color={colors.accent} />
+              <Ionicons name="share-social-outline" size={compact ? s(15) : s(17)} color={colors.accent} />
             </TouchableOpacity>
           </TouchableOpacity>
         )}
@@ -381,7 +400,7 @@ export default function CirclesScreen() {
           onPress={() => setLeaveModalVisible(false)}
         >
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
             <View style={[styles.successIcon, { backgroundColor: colors.accentSoft, width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1 }]}>
               <Ionicons name="checkmark-circle" size={s(52)} color={colors.accent} />
             </View>
@@ -399,6 +418,89 @@ export default function CirclesScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {/* ── Invitations Modal ── */}
+      <Modal visible={invitationsVisible} transparent animationType="fade">
+        <TouchableOpacity
+          style={[styles.overlayCenter, { backgroundColor: colors.overlay }]}
+          activeOpacity={1}
+          onPress={() => setInvitationsVisible(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '90%' : '80%', maxWidth: s(380), maxHeight: '80%' }]}>
+              <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(22), marginBottom: s(4) }]}>Invitations</Text>
+              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(13), marginBottom: s(18) }]}>
+                {pendingInvitations.length > 0
+                  ? `You have ${pendingInvitations.length} pending invitation${pendingInvitations.length !== 1 ? 's' : ''}`
+                  : 'No pending invitations'}
+              </Text>
+
+              <ScrollView style={{ maxHeight: s(320), width: '100%' }}>
+                {pendingInvitations.map((invite) => (
+                  <View
+                    key={invite.id}
+                    style={[styles.memberRow, { borderBottomColor: colors.border, paddingVertical: s(12), gap: s(10), borderBottomWidth: 1 }]}
+                  >
+                    <View style={[styles.memberAvatar, { backgroundColor: (invite.circleColor || colors.accent) + '20', width: s(36), height: s(36), borderRadius: s(10) }]}>
+                      <Text style={[styles.memberInitial, { color: invite.circleColor || colors.accent, fontSize: s(15) }]}>{(invite.circleName || '?')[0].toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.text, fontSize: s(14), fontWeight: '600' }}>{invite.circleName || 'Unknown Circle'}</Text>
+                      <Text style={{ color: colors.muted, fontSize: s(11) }}>Invited by {invite.invitedByName || 'Unknown'}</Text>
+                    </View>
+                    {invitationStatus[invite.id] ? (
+                      <Text style={{ color: invitationStatus[invite.id] === 'accepted' ? colors.accentStrong : colors.danger, fontSize: s(12), fontWeight: '700' }}>
+                        {invitationStatus[invite.id] === 'accepted' ? 'Accepted!' : 'Declined'}
+                      </Text>
+                    ) : handlingInvitation === invite.id ? (
+                      <Text style={{ color: colors.muted, fontSize: s(12) }}>...</Text>
+                    ) : (
+                      <View style={{ flexDirection: 'row', gap: s(6) }}>
+                        <TouchableOpacity
+                          style={{ backgroundColor: colors.accentStrong + '20', borderRadius: s(8), paddingHorizontal: s(12), paddingVertical: s(6) }}
+                          onPress={async () => {
+                            setHandlingInvitation(invite.id);
+                            const ok = await respondToInvitation(invite.id, 'accepted', invite.circleId);
+                            setHandlingInvitation(null);
+                            if (ok) {
+                              setInvitationStatus(prev => ({ ...prev, [invite.id]: 'accepted' }));
+                              sendChatMessage(invite.circleId, `${user?.name || 'Someone'} accepted the invitation and joined the circle`);
+                            }
+                            refreshCircles();
+                          }}
+                        >
+                          <Text style={{ color: colors.accentStrong, fontSize: s(12), fontWeight: '700' }}>Accept</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={{ backgroundColor: colors.danger + '15', borderRadius: s(8), paddingHorizontal: s(12), paddingVertical: s(6) }}
+                          onPress={async () => {
+                            setHandlingInvitation(invite.id);
+                            await respondToInvitation(invite.id, 'declined', invite.circleId);
+                            setHandlingInvitation(null);
+                            setInvitationStatus(prev => ({ ...prev, [invite.id]: 'declined' }));
+                          }}
+                        >
+                          <Text style={{ color: colors.danger, fontSize: s(12), fontWeight: '700' }}>Decline</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </ScrollView>
+
+              {pendingInvitations.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.btnPrimary, { backgroundColor: colors.accent, borderRadius: s(12), paddingVertical: s(13), marginTop: s(16), width: '100%' }]}
+          onPress={() => { setInvitationsVisible(false); setInvitationStatus({}); }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.btnText, { color: colors.onAccent, fontSize: s(15) }]}>Close</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
       {/* ── Confirm Add Member Modal ── */}
       <Modal visible={confirmAddVisible} transparent animationType="fade">
         <TouchableOpacity
@@ -407,12 +509,12 @@ export default function CirclesScreen() {
           onPress={() => setConfirmAddVisible(false)}
         >
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
             <View style={[styles.successIcon, { backgroundColor: colors.accentSoft, width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1 }]}>
               <Ionicons name="person-add" size={s(52)} color={colors.accent} />
             </View>
             <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(24) }]}>Add Member</Text>
-            <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18) }]}>
+            <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18), textAlign: 'left', alignSelf: 'stretch' }]}>
               Add {pendingMember?.name} to &ldquo;{pendingMember?.circle?.name}&rdquo;?
             </Text>
             <View style={{ flexDirection: 'row', gap: s(12), width: '100%' }}>
@@ -449,14 +551,14 @@ export default function CirclesScreen() {
       <Modal visible={confirmDelete !== null} transparent animationType="fade">
         <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setConfirmDelete(null)}>
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
               <View style={[styles.successIcon, { backgroundColor: colors.danger + '20', width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1, borderColor: colors.danger + '30' }]}>
                 <Ionicons name={confirmDelete?.type === 'deleteCircle' ? 'trash-outline' : confirmDelete?.type === 'deleteEvent' ? 'calendar-outline' : 'person-remove-outline'} size={s(32)} color={colors.danger} />
               </View>
               <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(24) }]}>
                 {confirmDelete?.type === 'deleteCircle' ? 'Delete Circle' : confirmDelete?.type === 'deleteEvent' ? 'Delete Event' : 'Remove Member'}
               </Text>
-              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18) }]}>
+              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18), textAlign: 'left', alignSelf: 'stretch' }]}>
                 {confirmDelete?.type === 'deleteCircle' ? `Delete "${confirmDelete.circle?.name}"? This cannot be undone.` : confirmDelete?.type === 'deleteEvent' ? 'Delete this event?' : `Remove ${confirmDelete?.member} from "${confirmDelete?.circle?.name}"?`}
               </Text>
               <View style={{ flexDirection: 'row', gap: s(12), width: '100%' }}>
@@ -510,25 +612,25 @@ export default function CirclesScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14', paddingTop: Platform.OS === 'android' ? 32 : 0 },
+  safe: { flex: 1, paddingTop: Platform.OS === 'android' ? 16 : 0 },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12,
   },
-  headerTitle: { color: '#F1F5F9', fontSize: 26, fontWeight: '800', letterSpacing: -0.5 },
-  headerSub: { color: '#475569', fontSize: 13, marginTop: 2 },
+  headerTitle: { fontSize: 26, fontWeight: '800', letterSpacing: -0.5 },
+  headerSub: { fontSize: 13, marginTop: 2 },
   headerBtns: { flexDirection: 'row', gap: 10 },
   iconBtn: {
     width: 40, height: 40, borderRadius: 12,
-    backgroundColor: '#0F172A', borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
     justifyContent: 'center', alignItems: 'center',
   },
-  iconBtnPrimary: { backgroundColor: '#0F766E', borderColor: '#2DD4BF40' },
+  iconBtnPrimary: { borderWidth: 1 },
   list: { paddingHorizontal: 16, paddingBottom: 40 },
   card: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#0F172A', borderRadius: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: '#243149', overflow: 'hidden', padding: 14,
+    borderRadius: 16, marginBottom: 12,
+    borderWidth: 1, overflow: 'hidden', padding: 14,
   },
   cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
   avatarWrap: {
@@ -537,132 +639,132 @@ const styles = StyleSheet.create({
   },
   cardBody: { flex: 1 },
   cardNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  cardName: { color: '#F1F5F9', fontSize: 15, fontWeight: '700' },
+  cardName: { fontSize: 15, fontWeight: '700' },
   ownerBadge: {
-    backgroundColor: '#6366F120', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2,
-    borderWidth: 1, borderColor: '#6366F140',
+    borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2,
+    borderWidth: 1,
   },
-  ownerBadgeText: { color: '#818CF8', fontSize: 10, fontWeight: '700' },
+  ownerBadgeText: { fontSize: 10, fontWeight: '700' },
   cardMeta: { flexDirection: 'row', gap: 8 },
   metaChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: '#131C30', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
   },
-  metaText: { color: '#64748B', fontSize: 11 },
+  metaText: { fontSize: 11 },
   shareBtn: {
     width: 36, height: 36, borderRadius: 10,
-    backgroundColor: '#6366F110', borderWidth: 1, borderColor: '#6366F130',
+    borderWidth: 1,
     justifyContent: 'center', alignItems: 'center', marginLeft: 8,
   },
   emptyWrap: { alignItems: 'center', paddingTop: 60, gap: 10 },
   emptyIcon: {
     width: 60, height: 60, borderRadius: 18,
-    backgroundColor: '#6366F115', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#6366F130',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
   },
-  emptyTitle: { color: '#94A3B8', fontSize: 16, fontWeight: '600' },
-  emptySub: { color: '#64748B', fontSize: 13 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  overlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center' },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptySub: { fontSize: 13 },
+  overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  overlayCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   sheet: {
-    backgroundColor: '#0F172A', borderRadius: 22,
+    borderRadius: 22,
     padding: 24, paddingBottom: 36,
-    borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
   },
   sheetAccent: { height: 3, width: 36, borderRadius: 2, marginTop: 4, marginBottom: 14 },
   colorRow: { flexDirection: 'row', gap: 10, marginBottom: 20, flexWrap: 'wrap' },
   colorSwatch: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, borderColor: 'transparent' },
   colorSwatchActive: { borderColor: '#F1F5F9' },
-  sheetHandle: { width: 36, height: 4, backgroundColor: '#1E2D4A', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
-  sheetTitle: { color: '#F1F5F9', fontSize: 20, fontWeight: '700', marginBottom: 4 },
-  sheetSub: { color: '#475569', fontSize: 13, marginBottom: 22 },
-  fieldLabel: { color: '#64748B', fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  sheetTitle: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  sheetSub: { fontSize: 13, marginBottom: 22 },
+  fieldLabel: { fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
   inputWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#111827', borderRadius: 12,
-    borderWidth: 1, borderColor: '#243149', marginBottom: 14, paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1, marginBottom: 14, paddingHorizontal: 14,
   },
   inputIcon: { marginRight: 10 },
-  input: { flex: 1, color: '#F1F5F9', fontSize: 15, paddingVertical: 13 },
+  input: { flex: 1, fontSize: 15, paddingVertical: 13 },
   codeBox: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#111827', borderRadius: 12, padding: 16,
-    borderWidth: 1, borderColor: '#6366F130', marginBottom: 20,
+    borderRadius: 12, padding: 16,
+    borderWidth: 1, marginBottom: 20,
   },
-  codeValue: { color: '#818CF8', fontSize: 24, fontWeight: '800', letterSpacing: 6 },
+  codeValue: { fontSize: 24, fontWeight: '800', letterSpacing: 6 },
   refreshBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  refreshText: { color: '#818CF8', fontSize: 12 },
+  refreshText: { fontSize: 12 },
   codeInput: {
-    backgroundColor: '#131C30', color: '#818CF8', borderRadius: 14,
-    borderWidth: 1, borderColor: '#6366F130', marginBottom: 14,
+    borderRadius: 14,
+    borderWidth: 1, marginBottom: 14,
     textAlign: 'center', fontSize: 28, fontWeight: '800', letterSpacing: 10,
     paddingVertical: 18,
   },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#7F1D1D40', borderRadius: 10, padding: 10, marginBottom: 14,
-    borderWidth: 1, borderColor: '#EF444430',
+    borderRadius: 10, padding: 10, marginBottom: 14,
+    borderWidth: 1,
   },
-  errorText: { color: '#F87171', fontSize: 13 },
+  errorText: { fontSize: 13 },
   btnPrimary: {
-    backgroundColor: '#0F766E', borderRadius: 12,
+    borderRadius: 12,
     paddingVertical: 15, alignItems: 'center', marginBottom: 12,
   },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  cancelText: { color: '#475569', textAlign: 'center', fontSize: 14, paddingVertical: 4 },
+  btnText: { fontWeight: '700', fontSize: 16 },
+  cancelText: { textAlign: 'center', fontSize: 14, paddingVertical: 4 },
   detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 },
   detailAvatar: {
     width: 52, height: 52, borderRadius: 16,
     justifyContent: 'center', alignItems: 'center',
   },
-  detailName: { color: '#F1F5F9', fontSize: 18, fontWeight: '700' },
-  detailSub: { color: '#475569', fontSize: 13, marginTop: 2 },
+  detailName: { fontSize: 18, fontWeight: '700' },
+  detailSub: { fontSize: 13, marginTop: 2 },
   shareInlineBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#6366F110', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
-    borderWidth: 1, borderColor: '#6366F130',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+    borderWidth: 1,
   },
-  shareInlineText: { color: '#818CF8', fontSize: 13, fontWeight: '600' },
+  shareInlineText: { fontSize: 13, fontWeight: '600' },
   membersList: { maxHeight: 200, marginBottom: 16 },
   memberRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#131C30',
+    paddingVertical: 8, borderBottomWidth: 1,
   },
   memberAvatar: {
     width: 34, height: 34, borderRadius: 10,
     justifyContent: 'center', alignItems: 'center',
   },
   memberInitial: { fontSize: 14, fontWeight: '700' },
-  memberName: { color: '#CBD5E1', fontSize: 14, flex: 1 },
+  memberName: { fontSize: 14, flex: 1 },
   removeMemberBtn: {
     width: 26, height: 26, borderRadius: 8,
-    backgroundColor: '#EF444415', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#EF444430',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
   },
   addMemberBtn: {
     minWidth: 56, height: 36, borderRadius: 10,
-    backgroundColor: '#2DD4BF', justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
     paddingHorizontal: 12, marginLeft: 8,
   },
-  addMemberBtnText: { color: '#06201F', fontSize: 14, fontWeight: '700' },
+  addMemberBtnText: { fontSize: 14, fontWeight: '700' },
   leaveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#EF444415', borderRadius: 14, paddingVertical: 14,
-    borderWidth: 1, borderColor: '#EF444430', marginBottom: 12,
+    borderRadius: 14, paddingVertical: 14,
+    borderWidth: 1, marginBottom: 12,
   },
-  leaveBtnText: { color: '#EF4444', fontSize: 15, fontWeight: '700' },
+  leaveBtnText: { fontSize: 15, fontWeight: '700' },
   successSheet: {
-    backgroundColor: '#0F172A', borderRadius: 20,
+    borderRadius: 20,
     padding: 24, alignItems: 'center', width: '70%', maxWidth: 260,
-    borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
   },
   successIcon: {
     width: 64, height: 64, borderRadius: 16,
-    backgroundColor: '#134E4A30', justifyContent: 'center', alignItems: 'center',
-    marginBottom: 14, borderWidth: 1, borderColor: '#2DD4BF40',
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: 14, borderWidth: 1,
   },
-  successTitle: { color: '#F1F5F9', fontSize: 24, fontWeight: '800', marginBottom: 6 },
-  successSub: { color: '#475569', fontSize: 15, textAlign: 'center', marginBottom: 18, lineHeight: 20 },
+  successTitle: { fontSize: 24, fontWeight: '800', marginBottom: 6 },
+  successSub: { fontSize: 15, textAlign: 'center', marginBottom: 18, lineHeight: 20 },
   searchResults: {
     marginTop: 6, maxHeight: 160, overflow: 'hidden',
     borderWidth: 1,
@@ -673,10 +775,9 @@ const styles = StyleSheet.create({
   },
   editPermBtn: {
     justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#6366F115',
   },
   eventRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    borderBottomWidth: 1, borderBottomColor: '#131C30',
+    borderBottomWidth: 1,
   },
 });

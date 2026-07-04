@@ -239,6 +239,7 @@ function dbCircleToCircle(
   isOwner: boolean,
   members: string[],
   memberIds: Record<string, string>,
+  userRole: string = 'member',
 ): Circle {
   return {
     id: dbCircle.id,
@@ -247,7 +248,7 @@ function dbCircleToCircle(
     color: dbCircle.color,
     members,
     isOwner,
-    canEdit: false,
+    role: isOwner ? 'owner' : (userRole as Circle['role']),
     memberIds,
   };
 }
@@ -273,15 +274,21 @@ export async function saveCircle(userId: string, circle: Circle) {
     if (circle.memberIds) {
       const memberEntries = Object.entries(circle.memberIds);
       if (memberEntries.length > 0) {
-        const { error: memberError } = await supabase
+        const payload = memberEntries.map(([name, uid]) => ({
+          circle_id: circle.id,
+          user_id: uid,
+          role: uid === userId ? 'owner' : 'member',
+        }));
+        let { error: memberError } = await supabase
           .from("circle_members")
-          .upsert(
-            memberEntries.map(([name, uid]) => ({
-              circle_id: circle.id,
-              user_id: uid,
-            })),
-            { onConflict: "circle_id, user_id" },
-          );
+          .upsert(payload, { onConflict: "circle_id, user_id" });
+        if (memberError && (memberError.code === '42703' || memberError.message?.includes('role'))) {
+          const fallbackPayload = payload.map(({ circle_id, user_id }) => ({ circle_id, user_id }));
+          const fallback = await supabase
+            .from("circle_members")
+            .upsert(fallbackPayload, { onConflict: "circle_id, user_id" });
+          memberError = fallback.error;
+        }
         if (memberError) throw memberError;
       }
     }
@@ -319,7 +326,7 @@ export async function getUserCircles(userId: string): Promise<Circle[]> {
     await supabase
       .from("circle_members")
       .upsert(
-        missingOwnerIds.map((cid) => ({ circle_id: cid, user_id: userId })),
+        missingOwnerIds.map((cid) => ({ circle_id: cid, user_id: userId, role: 'owner' })),
         { onConflict: "circle_id, user_id" },
       )
       .then(({ error }) => {
@@ -340,22 +347,31 @@ export async function getUserCircles(userId: string): Promise<Circle[]> {
 
   // Batch fetch all members for all circles in one query
   const circleIdList = circlesData.map((c) => c.id);
-  const { data: allMembers, error: membersError } = await supabase
+  let { data: allMembers, error: membersError } = await supabase
     .from("circle_members")
-    .select("circle_id, user_id, users!inner(name)")
-    .in("circle_id", circleIdList);
+    .select("circle_id, user_id, role, users!inner(name)")
+    .in("circle_id", circleIdList) as any;
+  if (membersError && (membersError.code === '42703' || membersError.message?.includes('role'))) {
+    const fallback = await supabase
+      .from("circle_members")
+      .select("circle_id, user_id, can_edit, users!inner(name)")
+      .in("circle_id", circleIdList) as any;
+    allMembers = fallback.data;
+    membersError = fallback.error;
+  }
   if (membersError) throw membersError;
 
   // Group by circle_id
   const membersByCircle: Record<
     string,
-    { user_id: string; name: string }[]
+    { user_id: string; name: string; role: string }[]
   > = {};
   for (const row of allMembers ?? []) {
     if (!membersByCircle[row.circle_id]) membersByCircle[row.circle_id] = [];
     membersByCircle[row.circle_id].push({
       user_id: row.user_id,
-      name: (row as any).users?.name ?? "Unknown",
+      name: row.users?.name ?? "Unknown",
+      role: row.role ?? (row.can_edit ? 'admin' : 'member'),
     });
   }
 
@@ -363,14 +379,17 @@ export async function getUserCircles(userId: string): Promise<Circle[]> {
     const circleMembers = membersByCircle[dbCircle.id] ?? [];
     const members = circleMembers.map((m) => m.name);
     const memberIds: Record<string, string> = {};
+    const memberRoles: Record<string, string> = {};
     for (const m of circleMembers) {
       memberIds[m.name] = m.user_id;
+      memberRoles[m.user_id] = m.role;
     }
     return dbCircleToCircle(
       dbCircle,
       dbCircle.owner_id === userId,
       members,
       memberIds,
+      memberRoles[userId] ?? 'member',
     );
   });
   return results;
@@ -499,7 +518,7 @@ export async function deleteCircle(userId: string, circleId: string) {
 export async function saveCircleToUser(targetUserId: string, circle: Circle) {
   try {
     const { error } = await supabase.from("circle_members").upsert(
-      { circle_id: circle.id, user_id: targetUserId },
+      { circle_id: circle.id, user_id: targetUserId, role: 'member' },
       { onConflict: "circle_id, user_id" },
     );
     if (error && error.code === "42501") {
@@ -668,40 +687,88 @@ export async function deleteCircleEvent(eventId: string) {
   }
 }
 
-export async function getMemberEditStatus(
+export async function getMemberRole(
   circleId: string,
   userId: string,
-): Promise<boolean> {
+): Promise<'member' | 'admin' | 'owner' | null> {
   try {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("circle_members")
-      .select("can_edit")
+      .select("role")
       .eq("circle_id", circleId)
       .eq("user_id", userId)
-      .maybeSingle();
+      .maybeSingle() as any;
+    if (error && (error.code === '42703' || error.message?.includes('role'))) {
+      const fallback = await supabase
+        .from("circle_members")
+        .select("can_edit")
+        .eq("circle_id", circleId)
+        .eq("user_id", userId)
+        .maybeSingle() as any;
+      data = fallback.data;
+      error = fallback.error;
+      if (!error && data) {
+        return data.can_edit ? 'admin' : 'member';
+      }
+    }
     if (error) throw error;
-    return data?.can_edit ?? false;
+    return (data?.role as 'member' | 'admin' | 'owner') ?? null;
   } catch (error) {
-    console.error("Error getting member edit status:", error);
+    console.error("Error getting member role:", error);
+    return null;
+  }
+}
+
+export async function setMemberRole(
+  circleId: string,
+  targetUserId: string,
+  newRole: 'member' | 'admin',
+): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from("circle_members")
+      .update({ role: newRole })
+      .eq("circle_id", circleId)
+      .eq("user_id", targetUserId);
+    if (error) throw error;
+    return true;
+  } catch (error) {
+    console.error("Error setting member role:", error);
     return false;
   }
 }
 
-export async function toggleMemberEditPermission(
+export async function transferOwnership(
   circleId: string,
-  userId: string,
-  canEdit: boolean,
-) {
+  newOwnerUserId: string,
+  currentUserId: string,
+): Promise<boolean> {
   try {
-    const { error } = await supabase
+    const { error: circleError } = await supabase
+      .from("circles")
+      .update({ owner_id: newOwnerUserId })
+      .eq("id", circleId)
+      .eq("owner_id", currentUserId);
+    if (circleError) throw circleError;
+
+    const { error: roleError } = await supabase
       .from("circle_members")
-      .update({ can_edit: canEdit })
+      .update({ role: 'member' })
       .eq("circle_id", circleId)
-      .eq("user_id", userId);
-    if (error) throw error;
+      .eq("user_id", currentUserId)
+      .eq("role", 'owner');
+    if (roleError) throw roleError;
+
+    const { error: newOwnerError } = await supabase
+      .from("circle_members")
+      .update({ role: 'owner' })
+      .eq("circle_id", circleId)
+      .eq("user_id", newOwnerUserId);
+    if (newOwnerError) throw newOwnerError;
+
     return true;
   } catch (error) {
-    console.error("Error toggling member edit permission:", error);
+    console.error("Error transferring ownership:", error);
     return false;
   }
 }
@@ -1808,6 +1875,17 @@ export function applyMemberPayload(
     return null;
   }
 
+  if (payload.eventType === "UPDATE") {
+    const row = payload.new;
+    if (!row) return null;
+    const circleId = extractCircleId(row);
+    if (!circleId) return null;
+
+    if (row.user_id === currentUserId) return null;
+
+    return null;
+  }
+
   if (payload.eventType === "DELETE") {
     const row = payload.old;
     if (!row) return null;
@@ -1883,6 +1961,180 @@ export function applyCircleEventPayload(
       ...circleEvents,
       [circleId]: current.filter((e) => e.id !== row.id),
     };
+  }
+
+  return null;
+}
+
+// ─── Invitation Operations ─────────────────────────────────────────────────────
+
+export interface CircleInvitation {
+  id: string;
+  circleId: string;
+  invitedUserId: string;
+  invitedBy: string;
+  status: 'pending' | 'accepted' | 'declined';
+  circleName?: string;
+  circleColor?: string;
+  invitedByName?: string;
+  createdAt: string;
+}
+
+export async function sendInvitation(
+  circleId: string,
+  invitedUserId: string,
+  invitedBy: string,
+): Promise<boolean> {
+  try {
+    // Delete any existing invitation first (admitted user may have left and re-joining)
+    await supabase
+      .from("circle_invitations")
+      .delete()
+      .eq("circle_id", circleId)
+      .eq("invited_user_id", invitedUserId);
+
+    const { error } = await supabase.from("circle_invitations").insert({
+      circle_id: circleId,
+      invited_user_id: invitedUserId,
+      invited_by: invitedBy,
+      status: 'pending',
+    });
+    if (error) throw error;
+    return true;
+  } catch (error) {
+    console.error("Error sending invitation:", error);
+    return false;
+  }
+}
+
+export async function respondToInvitation(
+  invitationId: string,
+  status: 'accepted' | 'declined',
+  circleId: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from("circle_invitations")
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq("id", invitationId)
+      .eq("invited_user_id", userId);
+    if (error) throw error;
+
+    // If accepted, also add user to circle_members
+    if (status === 'accepted') {
+      const { error: memberError } = await supabase
+        .from("circle_members")
+        .upsert(
+          { circle_id: circleId, user_id: userId, role: 'member' },
+          { onConflict: "circle_id, user_id" },
+        );
+      if (memberError) throw memberError;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error responding to invitation:", error);
+    return false;
+  }
+}
+
+export async function getPendingInvitations(
+  userId: string,
+): Promise<CircleInvitation[]> {
+  try {
+    const { data, error } = await supabase
+      .from("circle_invitations")
+      .select("id, circle_id, invited_user_id, invited_by, status, created_at, circles!inner(name, color), invited:users!circle_invitations_invited_by_fkey(name)")
+      .eq("invited_user_id", userId)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false }) as any;
+    if (error) throw error;
+    return (data ?? []).map((r: any) => ({
+      id: r.id,
+      circleId: r.circle_id,
+      invitedUserId: r.invited_user_id,
+      invitedBy: r.invited_by,
+      status: r.status,
+      circleName: r.circles?.name ?? 'Unknown',
+      circleColor: r.circles?.color ?? '#2DD4BF',
+      invitedByName: r.invited?.name ?? 'Unknown',
+      createdAt: r.created_at,
+    }));
+  } catch (error) {
+    console.error("Error fetching pending invitations:", error);
+    return [];
+  }
+}
+
+export function onInvitationsChange(
+  userId: string,
+  callback: (payload: RealtimePayload) => void,
+): () => void {
+  const channel = supabase
+    .channel("invitations-" + userId)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "circle_invitations",
+        filter: `invited_user_id=eq.${userId}`,
+      },
+      (payload) => {
+        callback({
+          eventType: payload.eventType.toUpperCase() as RealtimeEventType,
+          new: payload.new as Record<string, any>,
+          old: payload.old as Record<string, any>,
+        });
+      },
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+export function applyInvitationPayload(
+  invitations: CircleInvitation[],
+  payload: RealtimePayload,
+): CircleInvitation[] | null {
+  if (payload.eventType === "INSERT") {
+    const row = payload.new;
+    if (!row || !row.id) return null;
+    const invitation: CircleInvitation = {
+      id: row.id,
+      circleId: row.circle_id ?? '',
+      invitedUserId: row.invited_user_id ?? '',
+      invitedBy: row.invited_by ?? '',
+      status: row.status ?? 'pending',
+      createdAt: row.created_at ?? new Date().toISOString(),
+    };
+    if (invitations.some((i) => i.id === invitation.id)) return invitations;
+    return [...invitations, invitation];
+  }
+
+  if (payload.eventType === "UPDATE") {
+    const row = payload.new;
+    if (!row || !row.id) return null;
+    const idx = invitations.findIndex((i) => i.id === row.id);
+    if (idx === -1) return null;
+    const updated = [...invitations];
+    updated[idx] = {
+      ...updated[idx],
+      status: row.status ?? updated[idx].status,
+    };
+    if (row.status && row.status !== 'pending') {
+      return updated.filter((i) => i.status === 'pending');
+    }
+    return updated;
+  }
+
+  if (payload.eventType === "DELETE") {
+    const row = payload.old;
+    if (!row || !row.id) return null;
+    return invitations.filter((i) => i.id !== row.id);
   }
 
   return null;

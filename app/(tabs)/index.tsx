@@ -1,17 +1,25 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, Modal, TextInput,
-  StyleSheet, SafeAreaView, Platform, FlatList, ScrollView,
+  StyleSheet, Platform, FlatList, ScrollView,
   Pressable, TouchableWithoutFeedback, useWindowDimensions, Animated, LayoutAnimation,
   RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Calendar, DateData } from 'react-native-calendars';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { useAuth, ScheduleEvent } from '@/context/AuthContext';
 import { useAppTheme } from '@/context/ThemeContext';
 import { usePrefs } from '@/context/PrefsContext';
 import { useResponsive } from '@/hooks/useResponsive';
 import { ThemedText } from '@/components/themed-text';
+
+interface DisplayEvent extends ScheduleEvent {
+  circleId?: string;
+  circleName?: string;
+}
 
 const EVENT_COLORS = ['#2DD4BF', '#0F766E', '#6366F1', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6', '#14B8A6'];
 const BLANK = { title: '', date: '', startTime: '', endTime: '', notes: '', color: '' };
@@ -206,7 +214,8 @@ function generateSuggestions(events: ScheduleEvent[]): { text: string; action: '
 }
 
 export default function DashboardScreen() {
-  const { events, addEvent, editEvent, archiveEvent, user, refreshEvents } = useAuth();
+  const { events, addEvent, editEvent, archiveEvent, user, refreshEvents, circles, circleEvents, fetchCircleEvents } = useAuth();
+  const router = useRouter();
   const { colors, darkMode } = useAppTheme();
   const { prefs } = usePrefs();
   const { s, isSmallDevice, pad } = useResponsive();
@@ -231,10 +240,34 @@ export default function DashboardScreen() {
   const [timePickerTarget, setTimePickerTarget] = useState<'createStart' | 'createEnd' | 'editStart' | 'editEnd' | null>(null);
   const [datePickerTarget, setDatePickerTarget] = useState<'create' | 'edit' | null>(null);
 
+  const allEvents: DisplayEvent[] = useMemo(() => {
+    const personal = events.map((e) => ({ ...e }));
+    const circleList: DisplayEvent[] = [];
+    for (const c of circles) {
+      const evts = circleEvents[c.id] ?? [];
+      for (const ce of evts) {
+        circleList.push({
+          id: ce.id,
+          title: ce.title,
+          date: ce.date,
+          startTime: ce.startTime,
+          endTime: ce.endTime,
+          color: c.color,
+          notes: ce.notes,
+          archived: false,
+          circleId: ce.circleId,
+          circleName: c.name,
+        });
+      }
+    }
+    return [...personal, ...circleList];
+  }, [events, circles, circleEvents]);
+
+  // Month grid: personal events only
   const dayEvents = useMemo(() => events.filter(e => !e.archived && e.date === selectedDate), [events, selectedDate]);
   const archivedForDate = useMemo(() => events.filter(e => e.archived && e.date === selectedDate).length, [events, selectedDate]);
   const markedDates = useMemo(() => buildMarkedDates(events, selectedDate, colors.accent, colors.muted), [events, selectedDate, colors.accent, colors.muted]);
-  const allSuggestions = useMemo(() => generateSuggestions(events.filter(e => !e.archived)), [events]);
+  const allSuggestions = useMemo(() => generateSuggestions(allEvents.filter(e => !e.archived)), [allEvents]);
   const currentSuggestion = allSuggestions[suggestionIndex % (allSuggestions.length || 1)];
 
   const greeting = useMemo(() => {
@@ -245,19 +278,31 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await refreshEvents(); } catch {}
+    try {
+      await Promise.all([
+        refreshEvents(),
+        ...circles.map((c) => fetchCircleEvents(c.id)),
+      ]);
+    } catch {}
     setRefreshing(false);
-  }, [refreshEvents]);
+  }, [refreshEvents, circles, fetchCircleEvents]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshEvents();
+      circles.forEach((c) => fetchCircleEvents(c.id));
+    }, [refreshEvents, circles, fetchCircleEvents]),
+  );
 
   const avatarColor = useMemo(() => {
     const colors = ['#2DD4BF','#F59E0B','#8B5CF6','#EC4899','#06B6D4','#34D399'];
     return colors[(user?.name?.charCodeAt(0) || 0) % colors.length];
   }, [user?.name]);
-  const todayCount = useMemo(() => events.filter(e => !e.archived && e.date === TODAY).length, [events]);
+  const todayCount = useMemo(() => allEvents.filter(e => !e.archived && e.date === TODAY).length, [allEvents]);
   const weekCount = useMemo(() => {
     const next7 = Array.from({ length: 7 }).map((_, i) => { const d = new Date(); d.setDate(d.getDate() + i); return d.toISOString().split('T')[0]; });
-    return events.filter(e => !e.archived && next7.includes(e.date)).length;
-  }, [events]);
+    return allEvents.filter(e => !e.archived && next7.includes(e.date)).length;
+  }, [allEvents]);
 
   const [viewMode, setViewMode] = useState<'month' | 'agenda'>('month');
   const isMonthView = viewMode === 'month';
@@ -275,8 +320,8 @@ export default function DashboardScreen() {
   }, [viewMode, slideAnim]);
 
   const groupedAgenda = useMemo(() => {
-    const groups: Record<string, ScheduleEvent[]> = {};
-    const sorted = [...events].filter(e => !e.archived).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+    const groups: Record<string, DisplayEvent[]> = {};
+    const sorted = [...allEvents].filter(e => !e.archived).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
     const today = TODAY;
     for (const e of sorted) {
       if (e.date < today) continue;
@@ -284,7 +329,7 @@ export default function DashboardScreen() {
       groups[e.date].push(e);
     }
     return Object.entries(groups);
-  }, [events]);
+  }, [allEvents]);
 
 
 
@@ -315,8 +360,12 @@ export default function DashboardScreen() {
     else { showBanner('success', 'Event added.'); setCreateForm(BLANK); setCreateVisible(false); setTimePickerTarget(null); setDatePickerTarget(null); }
   };
 
-  // ── Open edit modal pre-filled ──
-  const openEdit = (item: ScheduleEvent) => {
+  // ── Open edit modal pre-filled (personal events) or navigate (circle events) ──
+  const openEdit = (item: DisplayEvent) => {
+    if (item.circleId) {
+      router.push(`/(tabs)/circle-detail?id=${item.circleId}`);
+      return;
+    }
     setEditingId(item.id);
     setEditForm({
       title: item.title,
@@ -366,7 +415,7 @@ export default function DashboardScreen() {
       )}
 
       {/* ── Greeting Header ── */}
-      <View style={{ paddingHorizontal: pad(12, 16), paddingTop: s(20) }}>
+      <View style={{ paddingHorizontal: pad(12, 16), paddingTop: s(10) }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(14) }}>
             <View style={{ width: s(54), height: s(54), borderRadius: s(16), backgroundColor: avatarColor, justifyContent: 'center', alignItems: 'center' }}>
@@ -477,12 +526,13 @@ export default function DashboardScreen() {
             </View>
           </>
         }
-        renderItem={({ item }) => {
-          const color = item.color ?? colors.accent;
+        renderItem={({ item }: { item: ScheduleEvent }) => {
+          const e = item as DisplayEvent;
+          const color = e.color ?? colors.accent;
           return (
             <TouchableOpacity
               style={[styles.eventCard, { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth }]}
-              onPress={() => openEdit(item)}
+              onPress={() => openEdit(e)}
               activeOpacity={0.7}
             >
               {/* Left accent bar */}
@@ -491,7 +541,7 @@ export default function DashboardScreen() {
               {/* Edit button */}
               <TouchableOpacity
                 style={{ position: 'absolute', top: s(8), right: s(8), zIndex: 1, width: s(22), height: s(22), borderRadius: s(6), backgroundColor: colors.surfaceAlt + 'CC', justifyContent: 'center', alignItems: 'center' }}
-                onPress={() => openEdit(item)}
+                onPress={() => openEdit(e)}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons name="pencil" size={s(10)} color={color} />
@@ -500,21 +550,26 @@ export default function DashboardScreen() {
               {/* Content */}
               <View style={{ flex: 1, padding: s(12), paddingLeft: s(16), justifyContent: 'space-between' }}>
                 <View style={{ gap: s(5) }}>
-                  <Text style={{ color: colors.text, fontSize: s(13), fontWeight: '700', lineHeight: s(17) }} numberOfLines={2}>{item.title}</Text>
-                  {item.notes ? (
-                    <Text style={{ color: colors.muted, fontSize: s(10), lineHeight: s(13) }} numberOfLines={1}>{item.notes}</Text>
+                  <Text style={{ color: colors.text, fontSize: s(13), fontWeight: '700', lineHeight: s(17) }} numberOfLines={2}>{e.title}</Text>
+                  {e.notes ? (
+                    <Text style={{ color: colors.muted, fontSize: s(10), lineHeight: s(13) }} numberOfLines={1}>{e.notes}</Text>
+                  ) : null}
+                  {e.circleName ? (
+                    <View style={{ alignSelf: 'flex-start', backgroundColor: color + '18', borderRadius: s(4), paddingHorizontal: s(5), paddingVertical: s(1) }}>
+                      <Text style={{ color, fontSize: s(8), fontWeight: '600' }}>{e.circleName}</Text>
+                    </View>
                   ) : null}
                 </View>
 
                 <View style={{ gap: s(4) }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(4) }}>
                     <Ionicons name="time-outline" size={s(10)} color={color} />
-                    <Text style={{ color, fontSize: s(11), fontWeight: '600' }}>{item.startTime}</Text>
+                    <Text style={{ color, fontSize: s(11), fontWeight: '600' }}>{e.startTime}</Text>
                     <Text style={{ color: colors.muted, fontSize: s(9) }}>-</Text>
-                    <Text style={{ color: colors.muted, fontSize: s(10) }}>{item.endTime}</Text>
+                    <Text style={{ color: colors.muted, fontSize: s(10) }}>{e.endTime}</Text>
                   </View>
                   <View style={{ alignSelf: 'flex-start', backgroundColor: color + '15', borderRadius: s(5), paddingHorizontal: s(6), paddingVertical: s(2) }}>
-                    <Text style={{ color, fontSize: s(9), fontWeight: '700' }}>{getDuration(item.startTime, item.endTime)}</Text>
+                    <Text style={{ color, fontSize: s(9), fontWeight: '700' }}>{getDuration(e.startTime, e.endTime)}</Text>
                   </View>
                 </View>
               </View>
@@ -562,7 +617,7 @@ export default function DashboardScreen() {
             </View>
             <View style={{ flex: 1, backgroundColor: colors.success + '12', borderRadius: s(14), borderWidth: 1, borderColor: colors.success + '25', paddingVertical: s(12), alignItems: 'center', gap: s(3) }}>
               <Ionicons name="checkmark-circle-outline" size={s(18)} color={colors.success} />
-              <Text style={{ color: colors.success, fontSize: s(22), fontWeight: '800' }}>{events.length}</Text>
+              <Text style={{ color: colors.success, fontSize: s(22), fontWeight: '800' }}>{allEvents.length}</Text>
               <Text style={{ color: colors.muted, fontSize: s(10), fontWeight: '500' }}>Total</Text>
             </View>
           </View>
@@ -623,8 +678,15 @@ export default function DashboardScreen() {
                             </View>
                             <Text style={{ color: colors.text, fontSize: s(15), fontWeight: '700' }} numberOfLines={1}>{evt.title}</Text>
                             {evt.notes ? <Text style={{ color: colors.muted, fontSize: s(11), marginTop: s(2) }} numberOfLines={1}>{evt.notes}</Text> : null}
-                            <View style={{ alignSelf: 'flex-start', backgroundColor: color + '15', borderRadius: s(5), paddingHorizontal: s(7), paddingVertical: s(2), marginTop: s(4) }}>
-                              <Text style={{ color, fontSize: s(9), fontWeight: '700' }}>{getDuration(evt.startTime, evt.endTime)}</Text>
+                            <View style={{ flexDirection: 'row', gap: s(6), alignItems: 'center', marginTop: s(4) }}>
+                              <View style={{ alignSelf: 'flex-start', backgroundColor: color + '15', borderRadius: s(5), paddingHorizontal: s(7), paddingVertical: s(2) }}>
+                                <Text style={{ color, fontSize: s(9), fontWeight: '700' }}>{getDuration(evt.startTime, evt.endTime)}</Text>
+                              </View>
+                              {evt.circleName ? (
+                                <View style={{ alignSelf: 'flex-start', backgroundColor: color + '18', borderRadius: s(4), paddingHorizontal: s(5), paddingVertical: s(1) }}>
+                                  <Text style={{ color, fontSize: s(9), fontWeight: '600' }}>{evt.circleName}</Text>
+                                </View>
+                              ) : null}
                             </View>
                           </View>
                         </TouchableOpacity>
@@ -1067,57 +1129,55 @@ function computeDuration(start: string, end: string): string | null {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14', paddingTop: Platform.OS === 'android' ? 32 : 0 },
+  safe: { flex: 1, paddingTop: Platform.OS === 'android' ? 16 : 0 },
   banner: { marginHorizontal: 16, marginTop: 8, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14 },
-  bannerWarn: { backgroundColor: '#7F1D1D60', borderWidth: 1, borderColor: '#EF444430' },
-  bannerSuccess: { backgroundColor: '#14532D60', borderWidth: 1, borderColor: '#22C55E30' },
-  bannerText: { color: '#F1F5F9', fontSize: 13, textAlign: 'center' },
+  bannerText: { fontSize: 13, textAlign: 'center' },
   guestPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     alignSelf: 'center', marginTop: 8,
-    backgroundColor: '#F59E0B15', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 5,
-    borderWidth: 1, borderColor: '#F59E0B30',
+    borderRadius: 20, paddingHorizontal: 14, paddingVertical: 5,
+    borderWidth: 1,
   },
-  guestPillText: { color: '#F59E0B', fontSize: 12, fontWeight: '600' },
+  guestPillText: { fontSize: 12, fontWeight: '600' },
   calendarWrap: {
-    backgroundColor: '#0F172A', marginHorizontal: 16, marginTop: 12,
-    borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#243149',
+    marginHorizontal: 16, marginTop: 12,
+    borderRadius: 16, overflow: 'hidden', borderWidth: 1,
   },
   dateHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 20, paddingVertical: 16,
   },
-  dateHeaderMain: { color: '#F1F5F9', fontSize: 16, fontWeight: '700' },
-  dateHeaderSub: { color: '#475569', fontSize: 12, marginTop: 2 },
+  dateHeaderMain: { fontSize: 16, fontWeight: '700' },
+  dateHeaderSub: { fontSize: 12, marginTop: 2 },
   datePill: {
-    backgroundColor: '#6366F115', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5,
-    borderWidth: 1, borderColor: '#6366F130',
+    borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5,
+    borderWidth: 1,
   },
-  datePillText: { color: '#818CF8', fontSize: 12, fontWeight: '600' },
+  datePillText: { fontSize: 12, fontWeight: '600' },
   listContent: { paddingHorizontal: 16, paddingBottom: 100 },
   columnWrapper: { gap: 12, marginBottom: 12 },
   eventCard: {
     aspectRatio: 1,
-    backgroundColor: '#0F172A', borderRadius: 16,
-    borderWidth: 1, borderColor: '#243149',
+    borderRadius: 16,
+    borderWidth: 1,
     overflow: 'hidden',
   },
   emptyWrap: { alignItems: 'center', paddingTop: 48, gap: 10 },
   emptyIcon: {
     width: 60, height: 60, borderRadius: 18,
-    backgroundColor: '#6366F115', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#6366F130',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
   },
-  emptyTitle: { color: '#94A3B8', fontSize: 16, fontWeight: '600' },
-  emptySubtitle: { color: '#64748B', fontSize: 13 },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptySubtitle: { fontSize: 13 },
   fab: {
     position: 'absolute', bottom: 28, right: 24,
-    backgroundColor: '#0F766E', width: 58, height: 58,
+    width: 58, height: 58,
     borderRadius: 16, justifyContent: 'center', alignItems: 'center',
-    boxShadow: '0 0 14px rgba(15, 102, 118, 0.35)', elevation: 8,
+    elevation: 8,
   },
-  fabDisabled: { backgroundColor: '#1E293B', boxShadow: 'none' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  fabDisabled: { boxShadow: 'none' },
+  modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   // AI card
   aiCard: { marginHorizontal: 16, marginTop: 6, borderRadius: 14, padding: 16, borderWidth: 1 },
   aiHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
@@ -1130,13 +1190,13 @@ const styles = StyleSheet.create({
   aiActionText: { fontSize: 14, fontWeight: '700' },
   aiEmpty: { paddingVertical: 12, fontSize: 14 },
   modalSheet: {
-    backgroundColor: '#0F172A', borderRadius: 22,
+    borderRadius: 22,
     padding: 24, paddingBottom: Platform.OS === 'ios' ? 44 : 28,
-    borderWidth: 1, borderColor: '#243149', maxHeight: '90%',
+    borderWidth: 1, maxHeight: '90%',
   },
-  sheetHandle: { width: 36, height: 4, backgroundColor: '#1E2D4A', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
   editHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  sheetTitle: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
+  sheetTitle: { fontSize: 20, fontWeight: '700' },
   sheetAccent: { height: 3, width: 36, borderRadius: 2, marginTop: 8, marginBottom: 18 },
   colorRow: { flexDirection: 'row', gap: 8, marginBottom: 18, flexWrap: 'wrap' },
   colorSwatch: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, borderColor: 'transparent' },
@@ -1147,35 +1207,35 @@ const styles = StyleSheet.create({
   sheetSectionTitle: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, marginBottom: 10, textTransform: 'uppercase' },
   inputRow: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#111827', borderRadius: 12,
-    borderWidth: 1, borderColor: '#243149', paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1, paddingHorizontal: 14,
   },
   deleteBtnModal: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#EF444415', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7,
-    borderWidth: 1, borderColor: '#EF444430',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7,
+    borderWidth: 1,
   },
-  deleteBtnText: { color: '#EF4444', fontSize: 13, fontWeight: '600' },
-  fieldLabel: { color: '#64748B', fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
+  deleteBtnText: { fontSize: 13, fontWeight: '600' },
+  fieldLabel: { fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
   inputWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#111827', borderRadius: 12,
-    borderWidth: 1, borderColor: '#243149', marginBottom: 16, paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1, marginBottom: 16, paddingHorizontal: 14,
   },
   inputIcon: { marginRight: 10 },
-  input: { flex: 1, color: '#F1F5F9', fontSize: 15, paddingVertical: 13 },
+  input: { flex: 1, fontSize: 15, paddingVertical: 13 },
   timeRow: { flexDirection: 'row' },
   overlapBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#78350F40', borderRadius: 10, padding: 10, marginBottom: 14,
-    borderWidth: 1, borderColor: '#FBBF2430',
+    borderRadius: 10, padding: 10, marginBottom: 14,
+    borderWidth: 1,
   },
-  overlapText: { color: '#FCD34D', fontSize: 13 },
+  overlapText: { fontSize: 13 },
   btnSave: {
-    backgroundColor: '#0F766E', borderRadius: 12,
+    borderRadius: 12,
     paddingVertical: 15, alignItems: 'center', marginBottom: 12,
   },
-  btnSaveText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  cancelText: { color: '#475569', textAlign: 'center', fontSize: 14, paddingBottom: 8 },
+  btnSaveText: { fontWeight: '700', fontSize: 16 },
+  cancelText: { textAlign: 'center', fontSize: 14, paddingBottom: 8 },
   modalScroll: { flexGrow: 1 },
 });

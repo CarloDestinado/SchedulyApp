@@ -30,6 +30,8 @@ export interface User {
   bio?: string;
 }
 
+export type CircleRole = 'member' | 'admin' | 'owner';
+
 export interface Circle {
   id: string;
   name: string;
@@ -37,7 +39,7 @@ export interface Circle {
   members: string[];
   color: string;
   isOwner: boolean;
-  canEdit: boolean;
+  role: CircleRole;
   memberIds?: Record<string, string>;
 }
 
@@ -86,6 +88,7 @@ export interface AuthState {
   chatMessages: Record<string, ChatMessage[]>;
   conversations: supabaseDb.ConversationPreview[];
   conversationMessages: Record<string, supabaseDb.ConversationMessage[]>;
+  pendingInvitations: supabaseDb.CircleInvitation[];
 }
 
 export interface AuthContextValue extends AuthState {
@@ -121,7 +124,8 @@ export interface AuthContextValue extends AuthState {
   addCircleEvent: (circleId: string, event: Omit<CircleEvent, "id" | "circleId" | "createdBy">) => Promise<CircleEvent | null>;
   updateCircleEvent: (circleId: string, eventId: string, updates: Partial<CircleEvent>) => Promise<boolean>;
   deleteCircleEvent: (circleId: string, eventId: string) => Promise<boolean>;
-  toggleMemberEdit: (circleId: string, userId: string, canEdit: boolean) => Promise<boolean>;
+  setMemberRole: (circleId: string, targetUserId: string, newRole: 'member' | 'admin') => Promise<boolean>;
+  transferOwnership: (circleId: string, newOwnerUserId: string) => Promise<boolean>;
   fetchChatMessages: (circleId: string) => Promise<void>;
   sendChatMessage: (circleId: string, text: string, parentId?: string) => Promise<void>;
   fetchConversations: () => Promise<void>;
@@ -135,6 +139,10 @@ export interface AuthContextValue extends AuthState {
   applyConvMsgPayload: (convId: string, payload: supabaseDb.RealtimePayload) => void;
   updateProfile: (updates: { name?: string; bio?: string }) => Promise<boolean>;
   updateEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  pendingInvitations: supabaseDb.CircleInvitation[];
+  sendInvitation: (circleId: string, invitedUserId: string) => Promise<boolean>;
+  respondToInvitation: (invitationId: string, status: 'accepted' | 'declined', circleId: string) => Promise<boolean>;
+  refreshInvitations: () => Promise<void>;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -202,6 +210,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     chatMessages: {},
     conversations: [],
     conversationMessages: {},
+    pendingInvitations: [],
   });
 
   const stateRef = useRef(state);
@@ -210,6 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const unsubAuthRef = useRef<(() => void) | null>(null);
   const unsubscribeListenersRef = useRef<(() => void)[]>([]);
   const circleSubsRef = useRef<supabaseDb.CircleSubscriptions | null>(null);
+  const invitationUnsubRef = useRef<(() => void) | null>(null);
 
   // ── Debounce helper to avoid re-fetch storms ──
   const debounceTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -233,6 +243,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       circleSubsRef.current.unsubCircleEvents();
       circleSubsRef.current.unsubMessages();
       circleSubsRef.current = null;
+    }
+    if (invitationUnsubRef.current) {
+      invitationUnsubRef.current();
+      invitationUnsubRef.current = null;
     }
   }, []);
 
@@ -312,6 +326,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const circleId =
             payload.new?.circle_id ?? payload.old?.circle_id ?? null;
           if (!circleId) return;
+
+          // For INSERT, resolve userName from local circle data
+          // (real-time payload only contains user_id, not the user name)
+          if (payload.eventType === 'INSERT' && payload.new?.user_id) {
+            const circle = stateRef.current.circles.find((c) => c.id === circleId);
+            if (circle?.memberIds) {
+              const name = Object.entries(circle.memberIds).find(
+                ([, uid]) => uid === payload.new.user_id,
+              )?.[0];
+              if (name) {
+                payload.new.user_name = name;
+              }
+            }
+          }
+
           const msg = supabaseDb.applyMessagePayload(
             stateRef.current.chatMessages[circleId] ?? [],
             payload,
@@ -417,7 +446,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   },
                 );
 
+                // Set up invitations real-time listener
+                const unsubInvitations = supabaseDb.onInvitationsChange(
+                  uid,
+                  (payload) => {
+                    const newInvites = supabaseDb.applyInvitationPayload(
+                      stateRef.current.pendingInvitations,
+                      payload,
+                    );
+                    if (newInvites) {
+                      setState((prev) => ({ ...prev, pendingInvitations: newInvites }));
+                      // For INSERT, the payload lacks circleName/circleColor/invitedByName
+                      // (those require JOINs). Fetch in background to get full data.
+                      if (payload.eventType === 'INSERT') {
+                        supabaseDb.getPendingInvitations(uid).then((invites) => {
+                          setState((prev) => ({ ...prev, pendingInvitations: invites }));
+                        });
+                      }
+                    } else {
+                      supabaseDb.getPendingInvitations(uid).then((invites) => {
+                        setState((prev) => ({ ...prev, pendingInvitations: invites }));
+                      });
+                    }
+                  },
+                );
+
+                // Fetch initial pending invitations
+                supabaseDb.getPendingInvitations(uid).then((invites) => {
+                  setState((prev) => ({ ...prev, pendingInvitations: invites }));
+                });
+
                 unsubscribeListenersRef.current = [unsubEvents];
+                invitationUnsubRef.current = unsubInvitations;
 
                 // Set up circle-level subscriptions
                 const existingIds = stateRef.current.circles.map((c) => c.id);
@@ -428,35 +488,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 console.log(
                   "[Auth] ✅ Real-time listeners set up successfully",
                 );
-
-                // Initial fetch — parallel events + circles
-                Promise.all([
-                  supabaseDb.getUserEvents(uid),
-                  supabaseDb.getUserCircles(uid),
-                ])
-                  .then(([events, circles]) => {
-                    setState((prev) => ({
-                      ...prev,
-                      events,
-                      circles,
-                    }));
-                    AsyncStorage.setItem(EVENTS_KEY, JSON.stringify(events));
-                    AsyncStorage.setItem(CIRCLES_KEY, JSON.stringify(circles));
-                    setTimeout(() => archiveExpiredEvents(), 0);
-                    // Set up circle-level subs with freshly fetched circle IDs
-                    if (circles.length > 0) {
-                      setupCircleSubscriptions(
-                        uid,
-                        circles.map((c) => c.id),
-                      );
-                    }
-                  })
-                  .catch((err) =>
-                    console.error(
-                      "[Auth] Initial data fetch failed:",
-                      err,
-                    ),
-                  );
               } catch (listenerError) {
                 console.error(
                   "[Auth] Error setting up real-time listeners:",
@@ -488,6 +519,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         unsubAuthRef.current = () =>
           authData?.subscription?.unsubscribe();
+
+        // Await Supabase session recovery, then fetch fresh data for registered users.
+        // We must have a valid session (JWT) for RLS policies to allow the queries.
+        // This runs in parallel with onAuthStateChange — the last write wins.
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (uid) {
+          setState((prev) => ({
+            ...prev,
+            isRegistered: true,
+            userId: uid,
+          }));
+          const [events, circles, pendingInvitations] = await Promise.all([
+            supabaseDb.getUserEvents(uid),
+            supabaseDb.getUserCircles(uid),
+            supabaseDb.getPendingInvitations(uid),
+          ]).catch((err) => {
+            console.error("[Auth] Session-backed fetch failed:", err);
+            return [[], [], []] as [any[], any[], any[]];
+          });
+          setState((prev) => ({ ...prev, events, circles, pendingInvitations }));
+          AsyncStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+          AsyncStorage.setItem(CIRCLES_KEY, JSON.stringify(circles));
+          setTimeout(() => archiveExpiredEvents(), 0);
+          if (circles.length > 0) {
+            setupCircleSubscriptions(
+              uid,
+              circles.map((c) => c.id),
+            );
+          }
+        }
       } catch (error) {
         console.error("Error initializing auth:", error);
       } finally {
@@ -594,13 +656,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           userId,
         }));
 
+        // Fetch events, circles, and invitations from Supabase so the UI displays them right away
+        const [events, circles, pendingInvitations] = await Promise.all([
+          supabaseDb.getUserEvents(userId),
+          supabaseDb.getUserCircles(userId),
+          supabaseDb.getPendingInvitations(userId),
+        ]).catch(() => [[], [], []] as [ScheduleEvent[], Circle[], supabaseDb.CircleInvitation[]]);
+
+        setState((s) => ({ ...s, events, circles, pendingInvitations }));
+        AsyncStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+        AsyncStorage.setItem(CIRCLES_KEY, JSON.stringify(circles));
+
+        if (circles.length > 0) {
+          setupCircleSubscriptions(
+            userId,
+            circles.map((c) => c.id),
+          );
+        }
+
         return { success: true };
       } catch (error: any) {
         console.error("Error logging in:", error);
         return { success: false, error: getAuthErrorMessage(error) };
       }
     },
-    [],
+    [setupCircleSubscriptions],
   );
 
   const register = useCallback(
@@ -633,13 +713,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           userId,
         }));
 
+        // Fetch events, circles, and invitations from Supabase so the UI displays them right away
+        const [events, circles, pendingInvitations] = await Promise.all([
+          supabaseDb.getUserEvents(userId),
+          supabaseDb.getUserCircles(userId),
+          supabaseDb.getPendingInvitations(userId),
+        ]).catch(() => [[], [], []] as [ScheduleEvent[], Circle[], supabaseDb.CircleInvitation[]]);
+
+        setState((s) => ({ ...s, events, circles, pendingInvitations }));
+        AsyncStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+        AsyncStorage.setItem(CIRCLES_KEY, JSON.stringify(circles));
+
+        if (circles.length > 0) {
+          setupCircleSubscriptions(
+            userId,
+            circles.map((c) => c.id),
+          );
+        }
+
         return { success: true };
       } catch (error: any) {
         console.error("Error registering:", error);
         return { success: false, error: getAuthErrorMessage(error) };
       }
     },
-    [],
+    [setupCircleSubscriptions],
   );
 
   const logout = useCallback(async () => {
@@ -666,6 +764,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         chatMessages: {},
         conversations: [],
         conversationMessages: {},
+        pendingInvitations: [],
       });
     } catch (error) {
       console.error("Error logging out:", error);
@@ -882,7 +981,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const removeCircle = useCallback((id: string) => {
     const s = stateRef.current;
+    const leavingCircle = s.circles.find((c) => c.id === id);
+    const myName = s.user?.name ?? "Someone";
+
     setState((s) => ({ ...s, circles: s.circles.filter((c) => c.id !== id) }));
+
+    // Post system message to circle chat
+    if (s.userId && s.isRegistered && leavingCircle) {
+      supabaseDb.sendMessage(id, s.userId, `${myName} left the circle`).catch(() => {});
+    }
 
     // Delete from Supabase if registered
     if (s.userId && s.isRegistered) {
@@ -981,7 +1088,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           members: updatedMembers,
           color: circleData.color,
           isOwner: false,
-          canEdit: false,
+          role: 'member',
           memberIds: updatedMemberIds,
         });
 
@@ -993,7 +1100,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           members: updatedMembers,
           color: circleData.color,
           isOwner: false,
-          canEdit: false,
+          role: 'member',
           memberIds: updatedMemberIds,
         };
 
@@ -1001,6 +1108,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ...prev,
           circles: [joinedCircle, ...prev.circles],
         }));
+
+        // Post system message to circle chat
+        if (s.userId) {
+          supabaseDb.sendMessage(circleData.id, s.userId, `${myName} joined via invite code`).catch(() => {});
+        }
 
         // Re-setup circle subscriptions to include the new circle
         if (s.userId && s.isRegistered) {
@@ -1130,11 +1242,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const toggleMemberEdit = useCallback(
-    async (circleId: string, userId: string, canEdit: boolean): Promise<boolean> => {
-      return await supabaseDb.toggleMemberEditPermission(circleId, userId, canEdit);
+  const setMemberRole = useCallback(
+    async (circleId: string, targetUserId: string, newRole: 'member' | 'admin'): Promise<boolean> => {
+      const s = stateRef.current;
+      const ok = await supabaseDb.setMemberRole(circleId, targetUserId, newRole);
+      if (ok) {
+        // Post system message
+        const circle = s.circles.find((c) => c.id === circleId);
+        const targetName = circle?.memberIds ? Object.entries(circle.memberIds).find(([, uid]) => uid === targetUserId)?.[0] : undefined;
+        if (s.userId && targetName) {
+          supabaseDb.sendMessage(circleId, s.userId, `${targetName} is ${newRole === 'admin' ? 'now an admin' : 'no longer an admin'}`).catch(() => {});
+        }
+        await refreshCircles();
+      }
+      return ok;
     },
-    [],
+    [refreshCircles],
+  );
+
+  const transferOwnership = useCallback(
+    async (circleId: string, newOwnerUserId: string): Promise<boolean> => {
+      const s = stateRef.current;
+      if (!s.userId) return false;
+      const ok = await supabaseDb.transferOwnership(circleId, newOwnerUserId, s.userId);
+      if (ok) {
+        // Post system message
+        const circle = s.circles.find((c) => c.id === circleId);
+        const newOwnerName = circle?.memberIds ? Object.entries(circle.memberIds).find(([, uid]) => uid === newOwnerUserId)?.[0] : undefined;
+        if (s.userId && newOwnerName) {
+          supabaseDb.sendMessage(circleId, s.userId, `${newOwnerName} is now the owner`).catch(() => {});
+        }
+        await refreshCircles();
+      }
+      return ok;
+    },
+    [refreshCircles],
   );
 
   const fetchChatMessages = useCallback(async (circleId: string) => {
@@ -1341,6 +1483,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return Date.now() - guestLoginTime >= GUEST_EXPIRY_MS;
   }, []);
 
+  const sendInvitation = useCallback(
+    async (circleId: string, invitedUserId: string): Promise<boolean> => {
+      const s = stateRef.current;
+      if (!s.userId) return false;
+      const ok = await supabaseDb.sendInvitation(circleId, invitedUserId, s.userId);
+      return ok;
+    },
+    [],
+  );
+
+  const respondToInvitation = useCallback(
+    async (invitationId: string, status: 'accepted' | 'declined', circleId: string): Promise<boolean> => {
+      const s = stateRef.current;
+      if (!s.userId) return false;
+      const ok = await supabaseDb.respondToInvitation(invitationId, status, circleId, s.userId);
+      if (ok) {
+        // Remove invitation from local state immediately
+        setState((prev) => ({
+          ...prev,
+          pendingInvitations: prev.pendingInvitations.filter((i) => i.id !== invitationId),
+        }));
+        if (status === 'accepted') {
+          // Refresh circles to include the newly joined circle
+          const circles = await supabaseDb.getUserCircles(s.userId);
+          setState((prev) => ({ ...prev, circles }));
+          AsyncStorage.setItem(CIRCLES_KEY, JSON.stringify(circles));
+          if (circles.length > 0) {
+            setupCircleSubscriptions(s.userId, circles.map((c) => c.id));
+          }
+        }
+      }
+      return ok;
+    },
+    [setupCircleSubscriptions],
+  );
+
+  const refreshInvitations = useCallback(async () => {
+    const s = stateRef.current;
+    if (!s.userId || !s.isRegistered) return;
+    const invites = await supabaseDb.getPendingInvitations(s.userId);
+    setState((prev) => ({ ...prev, pendingInvitations: invites }));
+  }, []);
+
   return (
     <AuthContext.Provider
       value={{
@@ -1365,7 +1550,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         addCircleEvent,
         updateCircleEvent,
         deleteCircleEvent,
-        toggleMemberEdit,
+        setMemberRole,
+        transferOwnership,
         fetchChatMessages,
         sendChatMessage,
         fetchConversations,
@@ -1381,6 +1567,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updateEmail,
         isGuestExpired,
         loaded,
+        pendingInvitations: state.pendingInvitations,
+        sendInvitation,
+        respondToInvitation,
+        refreshInvitations,
       }}
     >
       {children}

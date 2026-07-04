@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, Switch, TouchableOpacity, ScrollView,
-  StyleSheet, SafeAreaView, Modal, TouchableWithoutFeedback, TextInput, Alert, ActivityIndicator,
+  StyleSheet, Modal, TouchableWithoutFeedback, TextInput, Alert, ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth, ScheduleEvent } from '@/context/AuthContext';
@@ -20,6 +21,7 @@ export default function ProfileScreen() {
   const { prefs, setPref } = usePrefs();
 
   const [archiveModalVisible, setArchiveModalVisible] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   const [editVisible, setEditVisible] = useState(false);
   const [selectedArchived, setSelectedArchived] = useState<ScheduleEvent | null>(null);
@@ -39,7 +41,8 @@ export default function ProfileScreen() {
 
   const archivedEvents = useMemo(() => events.filter(e => e.archived).sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime)), [events]);
 
-  const handleLogout = () => { logout(); setTimeout(() => router.replace('/login'), 0); };
+  const handleLogout = () => setShowLogoutModal(true);
+  const confirmLogout = () => { setShowLogoutModal(false); logout(); setTimeout(() => router.replace('/login'), 0); };
 
   const openEdit = () => {
     setEditName(user?.name ?? '');
@@ -78,7 +81,7 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
-      <ScrollView contentContainerStyle={[styles.scroll, { padding: pad(16, 20), paddingBottom: s(48), paddingTop: s(32) }]} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.scroll, { padding: pad(16, 20), paddingBottom: s(48), paddingTop: s(16) }]} showsVerticalScrollIndicator={false}>
 
         {/* Hero banner */}
         <View style={[styles.heroBanner, { backgroundColor: colors.surface, borderColor: ac + '30', borderRadius: s(18), padding: s(28), marginBottom: s(16), borderWidth: 1 }]}>
@@ -447,6 +450,31 @@ export default function ProfileScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* ── Sign Out Confirmation Modal ── */}
+        <Modal visible={showLogoutModal} transparent animationType="fade">
+          <TouchableOpacity style={[styles.modalOverlay, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setShowLogoutModal(false)}>
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View style={[styles.logoutModalSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(22), width: '82%', maxWidth: 340 }]}>
+                <View style={[styles.logoutModalIconWrap, { backgroundColor: colors.danger + '18', width: s(64), height: s(64), borderRadius: s(20) }]}>
+                  <Ionicons name="log-out-outline" size={s(30)} color={colors.danger} />
+                </View>
+                <Text style={[styles.logoutModalTitle, { color: colors.text, fontSize: s(20) }]}>Sign Out</Text>
+                <Text style={[styles.logoutModalBody, { color: colors.muted, fontSize: s(14) }]}>
+                  Are you sure you want to sign out?
+                </Text>
+                <View style={[styles.logoutModalActions, { gap: s(10) }]}>
+                  <TouchableOpacity style={[styles.logoutModalBtn, { backgroundColor: colors.surfaceAlt, borderRadius: s(14), paddingVertical: s(14), borderWidth: 1, borderColor: colors.border }]} onPress={() => setShowLogoutModal(false)} activeOpacity={0.8}>
+                    <Text style={[styles.logoutModalBtnText, { color: colors.text, fontSize: s(15) }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.logoutModalBtn, { backgroundColor: colors.danger, borderRadius: s(14), paddingVertical: s(14) }]} onPress={confirmLogout} activeOpacity={0.85}>
+                    <Text style={[styles.logoutModalBtnText, { color: '#fff', fontSize: s(15) }]}>Sign Out</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </TouchableOpacity>
+        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -472,18 +500,18 @@ function SettingRow({ icon, label, right, accent, labelColor }: {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14' },
+  safe: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 48 },
-  heroBanner: { alignItems: 'center', borderRadius: 18, padding: 28, backgroundColor: '#0F172A', borderWidth: 1, marginBottom: 16, overflow: 'hidden' },
-  heroBg: { position: 'absolute', top: -40, right: -40, width: 160, height: 160, borderRadius: 80, backgroundColor: '#2DD4BF', opacity: 0.07 },
+  heroBanner: { alignItems: 'center', borderRadius: 18, padding: 28, borderWidth: 1, marginBottom: 16, overflow: 'hidden' },
+  heroBg: { position: 'absolute', top: -40, right: -40, width: 160, height: 160, borderRadius: 80, opacity: 0.07 },
   avatarRing: { width: 80, height: 80, borderRadius: 24, borderWidth: 2, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
   heroName: { fontSize: 22, fontWeight: '800', letterSpacing: -0.3 },
   heroEmail: {},
   heroBio: { fontStyle: 'italic', textAlign: 'center', paddingHorizontal: 16 },
   heroBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5 },
   nameInput: { borderBottomWidth: 2, paddingVertical: 2, paddingHorizontal: 4, fontWeight: '800', textAlign: 'center', minWidth: 120 },
-  badgeReg: { backgroundColor: '#10B98120' },
-  badgeGuest: { backgroundColor: '#F59E0B20' },
+  badgeReg: {},
+  badgeGuest: {},
   heroBadgeText: { fontSize: 12, fontWeight: '600' },
   editProfileBtn: { flexDirection: 'row', alignItems: 'center' },
   editProfileIcon: { justifyContent: 'center', alignItems: 'center' },
@@ -493,16 +521,23 @@ const styles = StyleSheet.create({
   statLabel: { fontWeight: '600', marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.3 },
   eventRow: { flexDirection: 'row', alignItems: 'center' },
   eventDot: { borderRadius: 5 },
-  sectionLabel: { color: '#475569', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8, marginTop: 8, paddingLeft: 4 },
-  group: { backgroundColor: '#0F172A', borderRadius: 16, borderWidth: 1, borderColor: '#243149', marginBottom: 8, overflow: 'hidden' },
+  sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8, marginTop: 8, paddingLeft: 4 },
+  group: { borderRadius: 16, borderWidth: 1, marginBottom: 8, overflow: 'hidden' },
   settingRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14 },
   settingIconWrap: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  settingLabel: { color: '#CBD5E1', fontSize: 14, flex: 1 },
-  divider: { height: 1, backgroundColor: '#131C30' },
+  settingLabel: { fontSize: 14, flex: 1 },
+  divider: { height: 1 },
   editInput: { borderWidth: 1 },
-  logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#0F172A', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#243149', marginBottom: 8 },
-  logoutIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: '#EF444420', justifyContent: 'center', alignItems: 'center' },
-  logoutText: { color: '#EF4444', fontSize: 14, fontWeight: '600', flex: 1 },
+  logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 8 },
+  logoutIcon: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  logoutText: { fontSize: 14, fontWeight: '600', flex: 1 },
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  version: { color: '#1E293B', textAlign: 'center', fontSize: 12, marginTop: 16 },
+  logoutModalSheet: { alignItems: 'center', padding: 32, paddingTop: 28, borderWidth: 1 },
+  logoutModalIconWrap: { justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  logoutModalTitle: { fontWeight: '800', marginBottom: 6 },
+  logoutModalBody: { textAlign: 'center', lineHeight: 20, marginBottom: 24 },
+  logoutModalActions: { flexDirection: 'row', width: '100%' },
+  logoutModalBtn: { flex: 1, alignItems: 'center' },
+  logoutModalBtnText: { fontWeight: '700' },
+  version: { textAlign: 'center', fontSize: 12, marginTop: 16 },
 });

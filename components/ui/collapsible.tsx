@@ -4,9 +4,11 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { useAppTheme } from '@/context/ThemeContext';
 
 export function Collapsible({ children, title }: PropsWithChildren & { title: string }) {
   const [isOpen, setIsOpen] = useState(false);
+  const { colors } = useAppTheme();
 
   return (
     <ThemedView>
@@ -17,7 +19,7 @@ export function Collapsible({ children, title }: PropsWithChildren & { title: st
         <MaterialIcons
           name="chevron-right"
           size={18}
-          color="#9BA1A6"
+          color={colors.muted}
           style={{ transform: [{ rotate: isOpen ? '90deg' : '0deg' }] }}
         />
 

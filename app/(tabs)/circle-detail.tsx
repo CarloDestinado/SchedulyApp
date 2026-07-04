@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, Modal,
-  TextInput, StyleSheet, SafeAreaView, Share, ScrollView, Platform,
+  TextInput, StyleSheet, Share, ScrollView, Platform,
   TouchableWithoutFeedback,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar, DateData } from 'react-native-calendars';
 import { useAuth, Circle, CircleEvent } from '@/context/AuthContext';
@@ -22,7 +23,7 @@ const TIME_SLOTS = Array.from({ length: 48 }, (_, i) => {
 export default function CircleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { user, userId, circles, updateCircle, removeCircle, circleEvents, fetchCircleEvents, addCircleEvent, updateCircleEvent, deleteCircleEvent, toggleMemberEdit } = useAuth();
+  const { user, userId, circles, updateCircle, removeCircle, circleEvents, fetchCircleEvents, addCircleEvent, updateCircleEvent, deleteCircleEvent, setMemberRole, transferOwnership, sendInvitation, sendChatMessage } = useAuth();
   const { colors } = useAppTheme();
   const myName = user?.name ?? 'You';
   const { prefs } = usePrefs();
@@ -41,6 +42,8 @@ export default function CircleDetailScreen() {
   // Confirm add member modal
   const [confirmAddVisible, setConfirmAddVisible] = useState(false);
   const [pendingMember, setPendingMember] = useState<{ name: string; userId?: string; circle: Circle } | null>(null);
+  const [sendingInvite, setSendingInvite] = useState(false);
+  const [inviteSentName, setInviteSentName] = useState<string | null>(null);
 
   // Circle events form
   const [circleEventFormVisible, setCircleEventFormVisible] = useState(false);
@@ -52,12 +55,16 @@ export default function CircleDetailScreen() {
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [eventFormError, setEventFormError] = useState('');
 
-  // Member edit status
-  const [memberEditStatus, setMemberEditStatus] = useState<Record<string, boolean>>({});
+  // Track which user IDs are admins (for UI display)
+  const [isAdminMember, setIsAdminMember] = useState<Record<string, boolean>>({});
 
   // Pickers
   const [circleTimePickerTarget, setCircleTimePickerTarget] = useState<'start' | 'end' | null>(null);
   const [circleDatePickerVisible, setCircleDatePickerVisible] = useState(false);
+
+  // Transfer ownership
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<string | null>(null);
 
   // Event detail modal
   const [selectedEvent, setSelectedEvent] = useState<CircleEvent | null>(null);
@@ -77,12 +84,15 @@ export default function CircleDetailScreen() {
 
   const [deleteCommentId, setDeleteCommentId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{
-    type: 'removeMember' | 'deleteCircle' | 'deleteEvent';
+    type: 'removeMember' | 'deleteCircle' | 'deleteEvent' | 'leaveCircle';
     member?: string;
     circleId?: string;
     eventId?: string;
     memberIds?: Record<string, string>;
   } | null>(null);
+
+  // Admin promotion confirmation
+  const [confirmAdminTarget, setConfirmAdminTarget] = useState<{ member: string; memberUid: string; makeAdmin: boolean } | null>(null);
 
   useEffect(() => {
     setAddMemberName('');
@@ -97,17 +107,18 @@ export default function CircleDetailScreen() {
   }, [circle, fetchCircleEvents]);
 
   useEffect(() => {
-    if (circle && circle.isOwner) {
-      const loadStatus = async () => {
+    if (circle) {
+      const loadRoles = async () => {
         const status: Record<string, boolean> = {};
         for (const [, uid] of Object.entries(circle.memberIds || {})) {
-          status[uid] = await supabaseDb.getMemberEditStatus(circle.id, uid);
+          const role = await supabaseDb.getMemberRole(circle.id, uid);
+          status[uid] = role === 'admin';
         }
-        setMemberEditStatus(status);
+        setIsAdminMember(status);
       };
-      loadStatus();
+      loadRoles();
     } else {
-      setMemberEditStatus({});
+      setIsAdminMember({});
     }
   }, [circle]);
 
@@ -165,50 +176,65 @@ export default function CircleDetailScreen() {
     });
   };
 
-  const handleAddMember = (memberName: string, memberUserId?: string) => {
+  const handleSendInvitation = async (memberName: string, memberUserId?: string) => {
     if (!circle) return;
     const name = memberName.trim();
-    if (!name) { setAddMemberError('Please enter a name.'); return; }
-    if (circle.members.includes(name)) { setAddMemberError('Member already exists.'); return; }
-
-    const memberIds = { ...(circle.memberIds || {}) };
-    if (memberUserId) memberIds[name] = memberUserId;
-
-    updateCircle(circle.id, { members: [...circle.members, name], memberIds });
-
-    if (memberUserId) {
-      const newCircle: Circle = {
-        id: circle.id,
-        name: circle.name,
-        inviteCode: circle.inviteCode,
-        members: [...circle.members, name],
-        color: circle.color,
-        isOwner: false,
-        canEdit: false,
-        memberIds,
-      };
-      supabaseDb.saveCircleToUser(memberUserId, newCircle)
-        .catch(err => console.error("Error saving circle to user:", err));
+    if (!name) return;
+    if (!memberUserId) {
+      setAddMemberError('User must be registered to be invited.');
+      return;
     }
 
-    setAddMemberName('');
-    setAddMemberError('');
+    setSendingInvite(true);
+    const ok = await sendInvitation(circle.id, memberUserId);
+    setSendingInvite(false);
+
+    if (ok) {
+      setInviteSentName(name);
+      setAddMemberName('');
+      setAddMemberError('');
+      setTimeout(() => setInviteSentName(null), 3000);
+    } else {
+      setAddMemberError('Failed to send invitation. The user may already have a pending invitation.');
+    }
   };
 
-  const handleLeave = () => {
+  const handleTransferOwnership = async () => {
+    if (!circle || !transferTarget || !userId) return;
+    const targetUid = circle.memberIds?.[transferTarget];
+    if (!targetUid) return;
+    const ok = await transferOwnership(circle.id, targetUid);
+    if (ok) {
+      setShowTransferModal(false);
+      setTransferTarget(null);
+      router.push('/(tabs)/circles');
+    }
+  };
+
+  const handleConfirmAdminRole = () => {
+    if (!circle || !confirmAdminTarget) return;
+    const { memberUid, makeAdmin } = confirmAdminTarget;
+    setMemberRole(circle.id, memberUid, makeAdmin ? 'admin' : 'member').then((ok) => {
+      if (ok) {
+        setIsAdminMember(prev => ({ ...prev, [memberUid]: makeAdmin }));
+      }
+    });
+    setConfirmAdminTarget(null);
+  };
+
+  const handleLeaveOrDelete = () => {
     if (!circle) return;
     if (circle.isOwner) {
       setConfirmDelete({ type: 'deleteCircle', circleId: circle.id });
     } else {
-      removeCircle(circle.id);
-      router.push('/(tabs)/circles');
+      setConfirmDelete({ type: 'leaveCircle', circleId: circle.id });
     }
   };
 
   const canManageCircleEvents = (): boolean => {
     if (!circle) return false;
     if (circle.isOwner) return true;
-    if (userId && memberEditStatus[userId]) return true;
+    if (circle.role === 'admin' || circle.role === 'owner') return true;
     return false;
   };
 
@@ -353,23 +379,27 @@ export default function CircleDetailScreen() {
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
       {/* Header */}
-      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(12), paddingBottom: s(12) }]}>
+      <View style={[styles.header, { paddingHorizontal: pad(16, 20), paddingTop: s(8), paddingBottom: s(12) }]}>
         <TouchableOpacity onPress={() => router.push('/(tabs)/circles')} style={[styles.iconBtn, { backgroundColor: colors.surface, borderColor: colors.border, width: s(36), height: s(36), borderRadius: s(10) }]}>
-          <Ionicons name="chevron-back" size={s(20)} color={colors.text} />
+          <Ionicons name="arrow-back" size={s(20)} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: s(12) }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
             <Text style={[styles.headerTitle, { color: colors.text, fontSize: s(18) }]}>{circle.name}</Text>
-            {circle.isOwner && (
+            {circle.isOwner ? (
               <View style={[styles.ownerBadge, { borderRadius: s(6), paddingHorizontal: s(7), paddingVertical: s(2) }]}>
                 <Text style={[styles.ownerBadgeText, { fontSize: s(10) }]}>Owner</Text>
               </View>
-            )}
+            ) : circle.role === 'admin' ? (
+              <View style={[styles.ownerBadge, { backgroundColor: colors.accentStrong + '20', borderColor: colors.accentStrong + '40', borderRadius: s(6), paddingHorizontal: s(7), paddingVertical: s(2) }]}>
+                <Text style={[styles.ownerBadgeText, { color: colors.accentStrong, fontSize: s(10) }]}>Admin</Text>
+              </View>
+            ) : null}
           </View>
           <Text style={[styles.headerSub, { color: colors.muted, fontSize: s(12) }]}>{circle.members.length} member{circle.members.length !== 1 ? 's' : ''}</Text>
         </View>
         <TouchableOpacity onPress={handleShare} style={[styles.iconBtn, { backgroundColor: colors.accentSoft, borderColor: colors.accent + '35', width: s(36), height: s(36), borderRadius: s(10) }]}>
-          <Ionicons name="share-outline" size={s(17)} color={colors.accent} />
+          <Ionicons name="share-social-outline" size={s(17)} color={colors.accent} />
         </TouchableOpacity>
       </View>
 
@@ -382,10 +412,10 @@ export default function CircleDetailScreen() {
           </View>
         </View>
 
-        {/* Add Member (Owner only) */}
-        {circle.isOwner && (
+        {/* Invite Member (Owner or Admin only) */}
+        {(circle.isOwner || circle.role === 'admin') && (
           <View style={{ marginBottom: s(16) }}>
-            <Text style={[styles.fieldLabel, { color: colors.muted, fontSize: s(12) }]}>Add Member</Text>
+            <Text style={[styles.fieldLabel, { color: colors.muted, fontSize: s(12) }]}>Invite Member</Text>
             <View style={[styles.inputWrap, { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: s(12), paddingHorizontal: pad(12, 14), marginBottom: 0 }]}>
               <TextInput
                 style={[styles.input, { color: colors.text, fontSize: s(15), paddingVertical: s(13) }]}
@@ -398,31 +428,46 @@ export default function CircleDetailScreen() {
             </View>
             {searchResults.length > 0 && (
               <View style={[styles.searchResults, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(12) }]}>
-                {searchResults.map((u) => (
-                  <TouchableOpacity
-                    key={u.id}
-                    style={[styles.searchResultRow, { borderBottomColor: colors.border, paddingVertical: s(10), paddingHorizontal: s(12) }]}
-                    onPress={() => {
-                      setPendingMember({ name: u.name, userId: u.id, circle });
-                      setConfirmAddVisible(true);
-                    }}
-                  >
-                    <View style={[styles.memberAvatar, { backgroundColor: circle.color + '20', width: s(30), height: s(30), borderRadius: s(8) }]}>
-                      <Text style={[styles.memberInitial, { color: circle.color, fontSize: s(13) }]}>{u.name[0].toUpperCase()}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.memberName, { color: colors.text, fontSize: s(14) }]}>{u.name}</Text>
-                      <Text style={{ color: colors.muted, fontSize: s(11) }}>{u.email}</Text>
-                    </View>
-                    <Ionicons name="add-circle" size={s(20)} color={colors.accent} />
-                  </TouchableOpacity>
-                ))}
+                {searchResults.map((u) => {
+                  const alreadyMember = circle.members.includes(u.name) || (circle.memberIds && Object.values(circle.memberIds).includes(u.id));
+                  return (
+                    <TouchableOpacity
+                      key={u.id}
+                      style={[styles.searchResultRow, { borderBottomColor: colors.border, paddingVertical: s(10), paddingHorizontal: s(12) }]}
+                      onPress={() => {
+                        if (alreadyMember) return;
+                        setPendingMember({ name: u.name, userId: u.id, circle });
+                        setConfirmAddVisible(true);
+                      }}
+                      activeOpacity={alreadyMember ? 1 : 0.7}
+                    >
+                      <View style={[styles.memberAvatar, { backgroundColor: circle.color + '20', width: s(30), height: s(30), borderRadius: s(8) }]}>
+                        <Text style={[styles.memberInitial, { color: circle.color, fontSize: s(13) }]}>{u.name[0].toUpperCase()}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.memberName, { color: colors.text, fontSize: s(14) }]}>{u.name}</Text>
+                        <Text style={{ color: colors.muted, fontSize: s(11) }}>{u.email}</Text>
+                      </View>
+                      {alreadyMember ? (
+                        <Text style={{ color: colors.muted, fontSize: s(11), fontStyle: 'italic' }}>Already in circle</Text>
+                      ) : (
+                        <Ionicons name="add-circle" size={s(20)} color={colors.accent} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
             {addMemberError ? (
               <View style={[styles.errorBox, { borderRadius: s(10), padding: s(10), marginTop: s(8) }]}>
                 <Ionicons name="alert-circle-outline" size={s(14)} color="#F87171" />
                 <Text style={[styles.errorText, { fontSize: s(13) }]}>{addMemberError}</Text>
+              </View>
+            ) : null}
+            {inviteSentName ? (
+              <View style={{ borderRadius: s(10), padding: s(10), marginTop: s(8), backgroundColor: colors.accentSoft, flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
+                <Ionicons name="checkmark-circle" size={s(16)} color={colors.accent} />
+                <Text style={{ color: colors.accent, fontSize: s(13) }}>Invitation sent to {inviteSentName}!</Text>
               </View>
             ) : null}
           </View>
@@ -433,26 +478,44 @@ export default function CircleDetailScreen() {
         <View style={{ marginBottom: s(16) }}>
           {circle.members.map((member, i) => {
             const memberUid = circle.memberIds?.[member];
-            const canEdit = memberUid ? memberEditStatus[memberUid] : false;
+            const isCurrentUser = member === myName;
+            const isMemberOwner = isCurrentUser && circle.isOwner;
+            const isMemberAdmin = memberUid ? isAdminMember[memberUid] : false;
             return (
               <View key={i} style={[styles.memberRow, { borderBottomColor: colors.border, paddingVertical: compact ? s(6) : s(8), gap: s(12), borderBottomWidth: 1 }]}>
                 <View style={[styles.memberAvatar, { backgroundColor: circle.color + '20', width: compact ? s(30) : s(34), height: compact ? s(30) : s(34), borderRadius: compact ? s(8) : s(10) }]}>
                   <Text style={[styles.memberInitial, { color: circle.color, fontSize: compact ? s(12) : s(14) }]}>{member[0].toUpperCase()}</Text>
                 </View>
-                <Text style={[styles.memberName, { color: colors.text, fontSize: compact ? s(13) : s(14) }]}>{member}{member === myName ? ' (You)' : ''}</Text>
-                {circle.isOwner && member !== myName && memberUid && (
-                  <TouchableOpacity
-                    style={[styles.editPermBtn, { width: s(26), height: s(26), borderRadius: s(8), marginRight: s(4) }]}
-                    onPress={() =>
-                      toggleMemberEdit(circle.id, memberUid, !canEdit).then((ok) => {
-                        if (ok) setMemberEditStatus(prev => ({ ...prev, [memberUid]: !canEdit }));
-                      })
-                    }
-                  >
-                    <Ionicons name={canEdit ? "create" : "create-outline"} size={s(13)} color={canEdit ? colors.accent : colors.muted} />
-                  </TouchableOpacity>
+                <Text style={[styles.memberName, { color: colors.text, fontSize: compact ? s(13) : s(14) }]}>{member}{isCurrentUser ? ' (You)' : ''}</Text>
+                {isMemberOwner && (
+                  <View style={[styles.ownerBadge, { borderRadius: s(4), paddingHorizontal: s(5), paddingVertical: s(1) }]}>
+                    <Text style={[styles.ownerBadgeText, { fontSize: s(9) }]}>Owner</Text>
+                  </View>
                 )}
-                {circle.isOwner && member !== myName && (
+                {!isMemberOwner && isMemberAdmin && (
+                  <View style={[styles.ownerBadge, { backgroundColor: colors.accentStrong + '20', borderColor: colors.accentStrong + '40', borderRadius: s(4), paddingHorizontal: s(5), paddingVertical: s(1) }]}>
+                    <Text style={[styles.ownerBadgeText, { color: colors.accentStrong, fontSize: s(9) }]}>Admin</Text>
+                  </View>
+                )}
+                {/* Owner controls: promote/demote admin, remove member */}
+                {circle.isOwner && !isCurrentUser && memberUid && (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.editPermBtn, { width: s(26), height: s(26), borderRadius: s(8), marginRight: s(4) }]}
+                      onPress={() => setConfirmAdminTarget({ member, memberUid, makeAdmin: !isMemberAdmin })}
+                    >
+                      <Ionicons name={isMemberAdmin ? 'shield-checkmark' : 'shield-outline'} size={s(13)} color={isMemberAdmin ? colors.accent : colors.muted} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.removeMemberBtn, { width: s(26), height: s(26), borderRadius: s(8), borderWidth: 1 }]}
+                      onPress={() => handleRemoveMember(member)}
+                    >
+                      <Ionicons name="close" size={s(14)} color={colors.danger} />
+                    </TouchableOpacity>
+                  </>
+                )}
+                {/* Admin controls: can remove members but not other admins/owner */}
+                {circle.role === 'admin' && !isCurrentUser && memberUid && !isMemberAdmin && !isMemberOwner && (
                   <TouchableOpacity
                     style={[styles.removeMemberBtn, { width: s(26), height: s(26), borderRadius: s(8), borderWidth: 1 }]}
                     onPress={() => handleRemoveMember(member)}
@@ -519,43 +582,62 @@ export default function CircleDetailScreen() {
         </View>
 
         {/* Leave / Delete */}
-        <TouchableOpacity
-          style={[styles.leaveBtn, { borderRadius: s(14), paddingVertical: s(14), gap: s(8), marginBottom: s(12), borderWidth: 1 }]}
-          onPress={handleLeave}
-          activeOpacity={0.8}
-        >
-          <Ionicons name={circle.isOwner ? 'trash-outline' : 'exit-outline'} size={s(17)} color={colors.danger} />
-          <Text style={[styles.leaveBtnText, { color: colors.danger, fontSize: s(15) }]}>{circle.isOwner ? 'Delete Circle' : 'Leave Circle'}</Text>
-        </TouchableOpacity>
+        {circle.isOwner ? (
+          <View style={{ flexDirection: 'row', gap: s(10), marginBottom: s(12) }}>
+            <TouchableOpacity
+              style={[styles.leaveBtn, { flex: 1, borderRadius: s(14), paddingVertical: s(14), gap: s(8), borderWidth: 1 }]}
+              onPress={() => setShowTransferModal(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="exit-outline" size={s(17)} color={colors.accentStrong} />
+              <Text style={[styles.leaveBtnText, { color: colors.accentStrong, fontSize: s(15) }]}>Transfer & Leave</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.leaveBtn, { flex: 1, borderRadius: s(14), paddingVertical: s(14), gap: s(8), borderWidth: 1 }]}
+              onPress={handleLeaveOrDelete}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trash-outline" size={s(17)} color={colors.danger} />
+              <Text style={[styles.leaveBtnText, { color: colors.danger, fontSize: s(15) }]}>Delete Circle</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.leaveBtn, { borderRadius: s(14), paddingVertical: s(14), gap: s(8), marginBottom: s(12), borderWidth: 1 }]}
+            onPress={handleLeaveOrDelete}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="exit-outline" size={s(17)} color={colors.danger} />
+            <Text style={[styles.leaveBtnText, { color: colors.danger, fontSize: s(15) }]}>Leave Circle</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       {/* ── Confirm Add Member Modal ── */}
       <Modal visible={confirmAddVisible} transparent animationType="fade">
         <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setConfirmAddVisible(false)}>
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
               <View style={[styles.successIcon, { backgroundColor: colors.accentSoft, width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1 }]}>
                 <Ionicons name="person-add" size={s(52)} color={colors.accent} />
               </View>
-              <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(24) }]}>Add Member</Text>
-              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18) }]}>
-                Add {pendingMember?.name} to &ldquo;{pendingMember?.circle?.name}&rdquo;?
+              <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(24) }]}>Send Invitation</Text>
+              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18), textAlign: 'left', alignSelf: 'stretch' }]}>
+                Invite {pendingMember?.name} to join &ldquo;{pendingMember?.circle?.name}&rdquo;?
               </Text>
               <View style={{ flexDirection: 'row', gap: s(12), width: '100%' }}>
                 <TouchableOpacity
                   style={[styles.btnPrimary, { flex: 1, backgroundColor: colors.accentStrong, borderRadius: s(12), paddingVertical: s(15) }]}
                   onPress={() => {
                     if (pendingMember) {
-                      handleAddMember(pendingMember.name, pendingMember.userId);
-                      setSearchResults([]);
-                      setAddMemberName('');
+                      handleSendInvitation(pendingMember.name, pendingMember.userId);
                     }
                     setConfirmAddVisible(false);
                     setPendingMember(null);
                   }}
                   activeOpacity={0.85}
                 >
-                  <Text style={[styles.btnText, { color: colors.onAccent, fontSize: s(16) }]}>Add</Text>
+                  <Text style={[styles.btnText, { color: colors.onAccent, fontSize: s(16) }]}>{sendingInvite ? '...' : 'Invite'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.leaveBtn, { flex: 1, borderRadius: s(12), paddingVertical: s(15), borderWidth: 1 }]}
@@ -968,7 +1050,7 @@ export default function CircleDetailScreen() {
       <Modal visible={deleteCommentId !== null} transparent animationType="fade">
         <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setDeleteCommentId(null)}>
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
               <View style={[styles.successIcon, { backgroundColor: colors.danger + '20', width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1, borderColor: colors.danger + '30' }]}>
                 <Ionicons name="trash-outline" size={s(32)} color={colors.danger} />
               </View>
@@ -1001,15 +1083,15 @@ export default function CircleDetailScreen() {
       <Modal visible={confirmDelete !== null} transparent animationType="fade">
         <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setConfirmDelete(null)}>
           <TouchableWithoutFeedback onPress={() => {}}>
-            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(260) }]}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
               <View style={[styles.successIcon, { backgroundColor: colors.danger + '20', width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1, borderColor: colors.danger + '30' }]}>
-                <Ionicons name={confirmDelete?.type === 'deleteCircle' ? 'trash-outline' : confirmDelete?.type === 'deleteEvent' ? 'calendar-outline' : 'person-remove-outline'} size={s(32)} color={colors.danger} />
+                <Ionicons name={confirmDelete?.type === 'deleteCircle' ? 'trash-outline' : confirmDelete?.type === 'deleteEvent' ? 'calendar-outline' : confirmDelete?.type === 'leaveCircle' ? 'exit-outline' : 'person-remove-outline'} size={s(32)} color={colors.danger} />
               </View>
               <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 20 : s(24) }]}>
-                {confirmDelete?.type === 'deleteCircle' ? 'Delete Circle' : confirmDelete?.type === 'deleteEvent' ? 'Delete Event' : 'Remove Member'}
+                {confirmDelete?.type === 'deleteCircle' ? 'Delete Circle' : confirmDelete?.type === 'deleteEvent' ? 'Delete Event' : confirmDelete?.type === 'leaveCircle' ? 'Leave Circle' : 'Remove Member'}
               </Text>
-              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18) }]}>
-                {confirmDelete?.type === 'deleteCircle' ? 'This cannot be undone.' : confirmDelete?.type === 'deleteEvent' ? 'Delete this event?' : `Remove ${confirmDelete?.member} from the circle?`}
+              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(15), marginBottom: s(18), textAlign: 'left', alignSelf: 'stretch' }]}>
+                {confirmDelete?.type === 'deleteCircle' ? 'This cannot be undone.' : confirmDelete?.type === 'deleteEvent' ? 'Delete this event?' : confirmDelete?.type === 'leaveCircle' ? 'Are you sure you want to leave?' : `Remove ${confirmDelete?.member} from the circle?`}
               </Text>
               <View style={{ flexDirection: 'row', gap: s(12), width: '100%' }}>
                 <TouchableOpacity
@@ -1023,6 +1105,8 @@ export default function CircleDetailScreen() {
                       const removedUserId = memberIds[member];
                       delete memberIds[member];
                       updateCircle(confirmDelete.circleId!, { members: updatedMembers, memberIds });
+                      // Post system message
+                      sendChatMessage(confirmDelete.circleId!, `${member} was removed from the circle`);
                       if (removedUserId) {
                         supabaseDb.deleteCircle(removedUserId, confirmDelete.circleId!)
                           .catch(err => console.error("Error deleting circle from removed user:", err));
@@ -1032,6 +1116,9 @@ export default function CircleDetailScreen() {
                       router.push('/(tabs)/circles');
                     } else if (confirmDelete.type === 'deleteEvent') {
                       deleteCircleEvent(confirmDelete.circleId!, confirmDelete.eventId!);
+                    } else if (confirmDelete.type === 'leaveCircle') {
+                      removeCircle(confirmDelete.circleId!);
+                      router.push('/(tabs)/circles');
                     }
                     setConfirmDelete(null);
                   }}
@@ -1039,12 +1126,118 @@ export default function CircleDetailScreen() {
                 >
                   <Ionicons name="trash-outline" size={s(15)} color={colors.danger} />
                   <Text style={[styles.leaveBtnText, { color: colors.danger, fontSize: s(15) }]}>
-                    {confirmDelete?.type === 'removeMember' ? 'Remove' : 'Delete'}
+                    {confirmDelete?.type === 'removeMember' ? 'Remove' : confirmDelete?.type === 'leaveCircle' ? 'Leave' : 'Delete'}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.leaveBtn, { flex: 1, borderRadius: s(12), paddingVertical: s(15), borderWidth: 1 }]}
                   onPress={() => setConfirmDelete(null)}
+                >
+                  <Text style={[styles.leaveBtnText, { color: colors.muted, fontSize: s(15) }]}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Transfer Ownership Modal ── */}
+      <Modal visible={showTransferModal} transparent animationType="fade">
+        <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => { setShowTransferModal(false); setTransferTarget(null); }}>
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '85%' : '75%', maxWidth: s(360), alignItems: 'stretch' }]}>
+              <View style={{ alignItems: 'center' }}>
+                <View style={[styles.successIcon, { backgroundColor: colors.accentStrong + '20', width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1, borderColor: colors.accentStrong + '40' }]}>
+                  <Ionicons name="arrow-redo-outline" size={s(32)} color={colors.accentStrong} />
+                </View>
+                <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 18 : s(20) }]}>Transfer Ownership</Text>
+                <Text style={[styles.successSub, { color: colors.muted, fontSize: s(13), marginBottom: s(16), marginTop: s(4) }]}>
+                  Select a member to become the new owner:
+                </Text>
+              </View>
+              <ScrollView style={{ maxHeight: s(220) }} showsVerticalScrollIndicator={false}>
+                {circle.members
+                  .filter(m => m !== myName && circle.memberIds?.[m])
+                  .map((memberName) => {
+                    const uid = circle.memberIds?.[memberName];
+                    const isAdmin = uid ? isAdminMember[uid] : false;
+                    return (
+                      <TouchableOpacity
+                        key={memberName}
+                        style={[styles.memberRow, { borderBottomColor: colors.border, paddingVertical: s(8) }]}
+                        onPress={() => setTransferTarget(memberName)}
+                      >
+                        <View style={[styles.memberAvatar, { backgroundColor: circle.color + '20', width: s(30), height: s(30), borderRadius: s(8) }]}>
+                          <Text style={[styles.memberInitial, { color: circle.color, fontSize: s(13) }]}>{memberName[0].toUpperCase()}</Text>
+                        </View>
+                        <Text style={[styles.memberName, { color: colors.text, fontSize: s(14), flex: 1 }]} numberOfLines={1}>{memberName}</Text>
+                        {isAdmin && (
+                          <View style={[styles.ownerBadge, { marginRight: s(6) }]}>
+                            <Text style={[styles.ownerBadgeText, { color: colors.accentStrong, fontSize: s(8) }]}>Admin</Text>
+                          </View>
+                        )}
+                        {transferTarget === memberName && (
+                          <Ionicons name="checkmark-circle" size={s(20)} color={colors.accentStrong} />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                {circle.members.filter(m => m !== myName && circle.memberIds?.[m]).length === 0 && (
+                  <Text style={{ color: colors.danger, fontSize: s(13), textAlign: 'center', paddingVertical: s(12) }}>No other members to transfer to.</Text>
+                )}
+              </ScrollView>
+              <View style={{ flexDirection: 'row', gap: s(10), marginTop: s(12) }}>
+                <TouchableOpacity
+                  style={[styles.btnPrimary, { flex: 1, backgroundColor: colors.surfaceAlt, borderRadius: s(12), paddingVertical: s(14), borderWidth: 1, borderColor: colors.border }]}
+                  onPress={() => { setShowTransferModal(false); setTransferTarget(null); }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: colors.text, fontWeight: '700', fontSize: s(15) }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.btnPrimary, { flex: 1, backgroundColor: colors.accentStrong, borderRadius: s(12), paddingVertical: s(14), opacity: transferTarget ? 1 : 0.5 }]}
+                  onPress={handleTransferOwnership}
+                  disabled={!transferTarget}
+                  activeOpacity={0.85}
+                >
+                  <Text style={{ color: colors.onAccent, fontWeight: '700', fontSize: s(15) }}>Transfer & Leave</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Admin Role Confirmation Modal ── */}
+      <Modal visible={confirmAdminTarget !== null} transparent animationType="fade">
+        <TouchableOpacity style={[styles.overlayCenter, { backgroundColor: colors.overlay }]} activeOpacity={1} onPress={() => setConfirmAdminTarget(null)}>
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={[styles.successSheet, { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: s(20), padding: s(24), width: isSmallDevice ? '80%' : '70%', maxWidth: s(320) }]}>
+              <View style={[styles.successIcon, { backgroundColor: (confirmAdminTarget?.makeAdmin ? colors.accentStrong : colors.danger) + '20', width: s(64), height: s(64), borderRadius: s(16), marginBottom: s(14), borderWidth: 1, borderColor: (confirmAdminTarget?.makeAdmin ? colors.accentStrong : colors.danger) + '40' }]}>
+                <Ionicons name={confirmAdminTarget?.makeAdmin ? 'shield-checkmark' : 'shield-outline'} size={s(32)} color={confirmAdminTarget?.makeAdmin ? colors.accentStrong : colors.danger} />
+              </View>
+              <Text style={[styles.successTitle, { color: colors.text, fontSize: isSmallDevice ? 18 : s(20) }]}>
+                {confirmAdminTarget?.makeAdmin ? 'Make Admin' : 'Remove Admin'}
+              </Text>
+              <Text style={[styles.successSub, { color: colors.muted, fontSize: s(14), marginBottom: s(18), textAlign: 'left', alignSelf: 'stretch' }]}>
+                {confirmAdminTarget?.makeAdmin
+                  ? `Grant "${confirmAdminTarget.member}" admin privileges? They can add/remove members and manage events.`
+                  : `Remove admin privileges from "${confirmAdminTarget?.member}"? They will become a regular member.`}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: s(12), width: '100%' }}>
+                <TouchableOpacity
+                  style={[styles.leaveBtn, { flex: 1, borderRadius: s(12), paddingVertical: s(15), borderWidth: 1 }]}
+                  onPress={handleConfirmAdminRole}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name={confirmAdminTarget?.makeAdmin ? 'shield-checkmark' : 'shield-outline'} size={s(15)} color={confirmAdminTarget?.makeAdmin ? colors.accentStrong : colors.danger} />
+                  <Text style={[styles.leaveBtnText, { color: confirmAdminTarget?.makeAdmin ? colors.accentStrong : colors.danger, fontSize: s(15) }]}>
+                    {confirmAdminTarget?.makeAdmin ? 'Make Admin' : 'Remove'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.leaveBtn, { flex: 1, borderRadius: s(12), paddingVertical: s(15), borderWidth: 1 }]}
+                  onPress={() => setConfirmAdminTarget(null)}
                 >
                   <Text style={[styles.leaveBtnText, { color: colors.muted, fontSize: s(15) }]}>Cancel</Text>
                 </TouchableOpacity>
@@ -1060,80 +1253,79 @@ export default function CircleDetailScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#080B14', paddingTop: Platform.OS === 'android' ? 32 : 0 },
+  safe: { flex: 1, paddingTop: Platform.OS === 'android' ? 16 : 0 },
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12,
   },
-  headerTitle: { color: '#F1F5F9', fontSize: 18, fontWeight: '800' },
-  headerSub: { color: '#475569', fontSize: 12, marginTop: 1 },
+  headerTitle: { fontSize: 18, fontWeight: '800' },
+  headerSub: { fontSize: 12, marginTop: 1 },
   iconBtn: {
     justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#0F172A', borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
   },
   ownerBadge: {
-    backgroundColor: '#6366F120', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2,
-    borderWidth: 1, borderColor: '#6366F140',
+    borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2,
+    borderWidth: 1,
   },
-  ownerBadgeText: { color: '#818CF8', fontSize: 10, fontWeight: '700' },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  overlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center' },
+  ownerBadgeText: { fontSize: 10, fontWeight: '700' },
+  overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  overlayCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   sheet: {
-    backgroundColor: '#0F172A', borderRadius: 22,
+    borderRadius: 22,
     padding: 24, paddingBottom: 36,
-    borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
   },
-  sheetTitle: { color: '#F1F5F9', fontSize: 20, fontWeight: '700', marginBottom: 4 },
-  sheetSub: { color: '#475569', fontSize: 13, marginBottom: 22 },
-  fieldLabel: { color: '#64748B', fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
+  sheetTitle: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  sheetSub: { fontSize: 13, marginBottom: 22 },
+  fieldLabel: { fontSize: 12, fontWeight: '600', marginBottom: 6, letterSpacing: 0.4 },
   inputWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#111827', borderRadius: 12,
-    borderWidth: 1, borderColor: '#243149', marginBottom: 14, paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1, marginBottom: 14, paddingHorizontal: 14,
   },
   inputIcon: { marginRight: 10 },
-  input: { flex: 1, color: '#F1F5F9', fontSize: 15, paddingVertical: 13 },
+  input: { flex: 1, fontSize: 15, paddingVertical: 13 },
   codeBox: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#111827', borderRadius: 12, padding: 16,
-    borderWidth: 1, borderColor: '#6366F130', marginBottom: 20,
+    borderRadius: 12, padding: 16,
+    borderWidth: 1, marginBottom: 20,
   },
-  codeValue: { color: '#818CF8', fontSize: 24, fontWeight: '800', letterSpacing: 6 },
+  codeValue: { fontSize: 24, fontWeight: '800', letterSpacing: 6 },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#7F1D1D40', borderRadius: 10, padding: 10, marginBottom: 14,
-    borderWidth: 1, borderColor: '#EF444430',
+    borderRadius: 10, padding: 10, marginBottom: 14,
+    borderWidth: 1,
   },
-  errorText: { color: '#F87171', fontSize: 13 },
+  errorText: { fontSize: 13 },
   btnPrimary: {
-    backgroundColor: '#0F766E', borderRadius: 12,
+    borderRadius: 12,
     paddingVertical: 15, alignItems: 'center', marginBottom: 12,
   },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  cancelText: { color: '#475569', textAlign: 'center', fontSize: 14, paddingVertical: 4 },
+  btnText: { fontWeight: '700', fontSize: 16 },
+  cancelText: { textAlign: 'center', fontSize: 14, paddingVertical: 4 },
   memberRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#131C30',
+    paddingVertical: 8, borderBottomWidth: 1,
   },
   memberAvatar: {
     justifyContent: 'center', alignItems: 'center',
   },
   memberInitial: { fontSize: 14, fontWeight: '700' },
-  memberName: { color: '#CBD5E1', fontSize: 14, flex: 1 },
+  memberName: { fontSize: 14, flex: 1 },
   removeMemberBtn: {
     justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#EF444415', borderWidth: 1, borderColor: '#EF444430',
+    borderWidth: 1,
   },
   editPermBtn: {
     justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#6366F115',
   },
   leaveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#EF444415', borderRadius: 14, paddingVertical: 14,
-    borderWidth: 1, borderColor: '#EF444430', marginBottom: 12,
+    borderRadius: 14, paddingVertical: 14,
+    borderWidth: 1, marginBottom: 12,
   },
-  leaveBtnText: { color: '#EF4444', fontSize: 15, fontWeight: '700' },
+  leaveBtnText: { fontSize: 15, fontWeight: '700' },
   eventCard: {
     overflow: 'hidden',
   },
@@ -1157,15 +1349,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   successSheet: {
-    backgroundColor: '#0F172A', borderRadius: 20, padding: 24,
+    borderRadius: 20, padding: 24,
     alignItems: 'center', width: '70%', maxWidth: 260,
-    borderWidth: 1, borderColor: '#243149',
+    borderWidth: 1,
   },
   successIcon: {
     width: 64, height: 64, borderRadius: 16,
-    backgroundColor: '#134E4A30', justifyContent: 'center', alignItems: 'center',
-    marginBottom: 14, borderWidth: 1, borderColor: '#2DD4BF40',
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: 14, borderWidth: 1,
   },
-  successTitle: { color: '#F1F5F9', fontSize: 24, fontWeight: '800', marginBottom: 6 },
-  successSub: { color: '#475569', fontSize: 15, textAlign: 'center', marginBottom: 18, lineHeight: 20 },
+  successTitle: { fontSize: 24, fontWeight: '800', marginBottom: 6 },
+  successSub: { fontSize: 15, textAlign: 'center', marginBottom: 18, lineHeight: 20 },
 });

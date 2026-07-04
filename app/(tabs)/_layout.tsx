@@ -129,7 +129,7 @@ export default function TabLayout() {
               accessibilityLabel="Register for an account"
               accessibilityRole="button"
             >
-              <Text style={styles.btnText}>Register</Text>
+              <Text style={[styles.btnText, { color: colors.onAccent }]}>Register</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.btnSecondary, { borderColor: colors.accent }]}
@@ -162,7 +162,7 @@ export default function TabLayout() {
               style={[styles.btnPrimary, { backgroundColor: colors.accentStrong }]}
               onPress={() => { logout(); goTo('/register'); }}
             >
-              <Text style={styles.btnText}>Register Now</Text>
+              <Text style={[styles.btnText, { color: colors.onAccent }]}>Register Now</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.btnSecondary, { borderColor: colors.accent }]}
@@ -196,14 +196,14 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 20, fontWeight: '700', color: '#F1F5F9', marginBottom: 10, textAlign: 'center' },
   modalBody: { fontSize: 14, color: '#94A3B8', textAlign: 'center', lineHeight: 22, marginBottom: 24 },
   btnPrimary: {
-    backgroundColor: '#0F766E', borderRadius: 12,
+    borderRadius: 12,
     paddingVertical: 13, width: '100%', alignItems: 'center', marginBottom: 10,
   },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  btnText: { fontWeight: '700', fontSize: 15 },
   btnSecondary: {
-    borderWidth: 1.5, borderColor: '#2DD4BF', borderRadius: 12,
+    borderWidth: 1.5, borderRadius: 12,
     paddingVertical: 12, width: '100%', alignItems: 'center', marginBottom: 14,
   },
-  btnSecondaryText: { color: '#2DD4BF', fontWeight: '600', fontSize: 15 },
-  dismiss: { color: '#64748B', fontSize: 13 },
+  btnSecondaryText: { fontWeight: '600', fontSize: 15 },
+  dismiss: { fontSize: 13 },
 });

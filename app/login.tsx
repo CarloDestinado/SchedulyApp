@@ -10,12 +10,12 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  SafeAreaView,
   StyleSheet,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { ThemedText } from "@/components/themed-text";
 import { Button } from "@/components/ui";
 
@@ -229,10 +229,10 @@ export default function LoginScreen() {
 
       {/* Loading Modal */}
       <Modal visible={loading} transparent animationType="fade">
-        <View style={styles.loadingOverlay}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#2DD4BF" />
-            <ThemedText style={styles.loadingText}>Signing in...</ThemedText>
+        <View style={[styles.loadingOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.loadingCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <ActivityIndicator size="large" color={colors.accentStrong} />
+            <ThemedText style={[styles.loadingText, { color: colors.text }]}>Signing in...</ThemedText>
           </View>
         </View>
       </Modal>
